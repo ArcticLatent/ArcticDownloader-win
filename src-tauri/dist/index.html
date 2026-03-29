@@ -117,6 +117,17 @@
           <label title="Use asynchronous model offloading during ComfyUI execution. This can help some systems smooth out memory pressure but may not benefit every setup."><input type="checkbox" id="flag-async-offload" /> --async-offload</label>
           <label title="Disable ComfyUI smart memory behavior for more predictable VRAM handling. Useful for troubleshooting or when automatic memory decisions are not helping your workflow."><input type="checkbox" id="flag-disable-smart-memory" /> --disable-smart-memory</label>
         </div>
+        <div class="row runtime-settings-row">
+          <input id="comfy-custom-launch-args" type="text" placeholder="Your extra ComfyUI startup options, like --lowvram or --disable-smart-memory" />
+          <button id="save-comfy-custom-launch-args">Save Args</button>
+          <button id="clear-comfy-custom-launch-args" type="button">Clear Args</button>
+        </div>
+        <div class="row option-grid">
+          <label title="Show live ComfyUI stdout/stderr inside the app when ComfyUI is started from Arctic Helper.">
+            <input type="checkbox" id="comfy-show-runtime-logs" />
+            Show runtime logs in app
+          </label>
+        </div>
 
         <div class="row install-action-row">
           <button id="install-comfyui" class="primary">Install ComfyUI</button>
@@ -150,6 +161,21 @@
         <div class="row">
           <button id="comfy-clear-install-log">Clear Logs</button>
         </div>
+        <div class="row">
+          <h3>ComfyUI Runtime Console</h3>
+          <div id="comfy-runtime-log" class="comfy-log ansi-log">Ready</div>
+        </div>
+        <div class="row runtime-log-toolbar">
+          <select id="comfy-runtime-log-filter">
+            <option value="all">All Logs</option>
+            <option value="important">Highlights</option>
+            <option value="stderr">Technical Details</option>
+            <option value="stdout">General Activity</option>
+          </select>
+        </div>
+        <div class="row">
+          <button id="comfy-clear-runtime-log">Clear Runtime Logs</button>
+        </div>
       </section>
 
       <section class="panel hidden" id="tab-content-models">
@@ -158,17 +184,38 @@
           <button id="choose-root">Choose Folder</button>
           <button id="save-root">Save Folder</button>
         </div>
+        <div class="row">
+          <div id="effective-download-destination" class="path-hint">Download destination: Select your ComfyUI root folder first.</div>
+        </div>
 
         <div class="row model-row">
           <select id="model-family"></select>
-          <select id="model-id"></select>
           <select id="vram-tier"></select>
           <select id="ram-tier"></select>
-          <select id="variant-id"></select>
+          <input id="model-search" type="text" placeholder="Search models" />
+          <button id="select-visible-models" type="button">Select Visible</button>
+        </div>
+        <div class="row">
+          <div id="model-selection-summary" class="transfer-sub">No models selected.</div>
+        </div>
+        <div class="row model-panels">
+          <div class="model-panel">
+            <div class="section-header">
+              <h3>Available Models</h3>
+            </div>
+            <div id="model-selection-list" class="model-selection-list"></div>
+          </div>
+          <div class="model-panel">
+            <div class="section-header">
+              <h3>Selected Queue</h3>
+            </div>
+            <div id="selected-model-queue" class="selected-model-queue"></div>
+            <button id="clear-model-selection" type="button">Clear Selected</button>
+          </div>
         </div>
 
         <div class="row">
-          <button id="download-model" class="primary">Download Model Assets</button>
+          <button id="download-model" class="primary">Download Selected Model Assets</button>
         </div>
         <div class="row option-grid">
           <label title="Experimental. Enables Hugging Face Xet-backed download path for model files. May be faster on some networks/disks but can stall or behave inconsistently.">

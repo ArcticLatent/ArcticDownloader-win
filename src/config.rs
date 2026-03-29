@@ -155,6 +155,10 @@ pub struct AppSettings {
     pub shared_models_root: Option<PathBuf>,
     #[serde(default)]
     pub shared_models_use_default: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub comfyui_custom_launch_args: String,
+    #[serde(default = "default_true")]
+    pub comfyui_show_runtime_logs: bool,
 }
 
 impl AppSettings {
@@ -189,6 +193,8 @@ impl Default for AppSettings {
             hf_xet_enabled: false,
             shared_models_root: None,
             shared_models_use_default: false,
+            comfyui_custom_launch_args: String::new(),
+            comfyui_show_runtime_logs: true,
         }
     }
 }

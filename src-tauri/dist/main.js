@@ -44,6 +44,8 @@ const state = {
   comfyTorchRecommendedBase: "Recommended 'Torch 2.8.0 + cu128' for your GPU",
   sharedModelsRootDefault: "",
   sharedModelsUseDefault: false,
+  selectedModelVariants: new Map(),
+  comfyRuntimeLogs: [],
 };
 
 let progressSmoothTimer = null;
@@ -123,6 +125,9 @@ const el = {
   comfyStartInstalled: document.getElementById("comfy-start-installed"),
   comfyInstallLog: document.getElementById("comfy-install-log"),
   comfyClearInstallLog: document.getElementById("comfy-clear-install-log"),
+  comfyRuntimeLog: document.getElementById("comfy-runtime-log"),
+  comfyClearRuntimeLog: document.getElementById("comfy-clear-runtime-log"),
+  comfyRuntimeLogFilter: document.getElementById("comfy-runtime-log-filter"),
   runPreflight: document.getElementById("run-preflight"),
   preflightSummary: document.getElementById("preflight-summary"),
   preflightList: document.getElementById("preflight-list"),
@@ -140,6 +145,10 @@ const el = {
   flagBf16Unet: document.getElementById("flag-bf16-unet"),
   flagAsyncOffload: document.getElementById("flag-async-offload"),
   flagDisableSmartMemory: document.getElementById("flag-disable-smart-memory"),
+  comfyCustomLaunchArgs: document.getElementById("comfy-custom-launch-args"),
+  saveComfyCustomLaunchArgs: document.getElementById("save-comfy-custom-launch-args"),
+  clearComfyCustomLaunchArgs: document.getElementById("clear-comfy-custom-launch-args"),
+  comfyShowRuntimeLogs: document.getElementById("comfy-show-runtime-logs"),
   nodeComfyuiManager: document.getElementById("node-comfyui-manager"),
   nodeComfyuiEasyUse: document.getElementById("node-comfyui-easy-use"),
   nodeRgthreeComfy: document.getElementById("node-rgthree-comfy"),
@@ -158,10 +167,15 @@ const el = {
   saveRootWorkflow: document.getElementById("save-root-workflow"),
 
   modelFamily: document.getElementById("model-family"),
-  modelId: document.getElementById("model-id"),
   vramTier: document.getElementById("vram-tier"),
   ramTier: document.getElementById("ram-tier"),
-  variantId: document.getElementById("variant-id"),
+  modelSelectionList: document.getElementById("model-selection-list"),
+  modelSelectionSummary: document.getElementById("model-selection-summary"),
+  selectedModelQueue: document.getElementById("selected-model-queue"),
+  effectiveDownloadDestination: document.getElementById("effective-download-destination"),
+  modelSearch: document.getElementById("model-search"),
+  selectVisibleModels: document.getElementById("select-visible-models"),
+  clearModelSelection: document.getElementById("clear-model-selection"),
   downloadModel: document.getElementById("download-model"),
   enableHfXet: document.getElementById("enable-hf-xet"),
 
@@ -209,6 +223,123 @@ function logComfyLine(text) {
     .toUpperCase();
   if (!el.comfyInstallLog) return;
   el.comfyInstallLog.textContent = `[${stamp}] ${text}\n` + el.comfyInstallLog.textContent;
+}
+
+function escapeHtml(text) {
+  return String(text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function ansiToHtml(text) {
+  const input = String(text || "");
+  let html = "";
+  let classes = [];
+
+  const flush = (chunk) => {
+    if (!chunk) return;
+    const escaped = escapeHtml(chunk);
+    html += classes.length
+      ? `<span class="${classes.join(" ")}">${escaped}</span>`
+      : escaped;
+  };
+
+  let index = 0;
+  while (index < input.length) {
+    const escIndex = input.indexOf("\u001b[", index);
+    if (escIndex < 0) {
+      flush(input.slice(index));
+      break;
+    }
+    flush(input.slice(index, escIndex));
+    const match = /^\u001b\[([0-9;]*)m/.exec(input.slice(escIndex));
+    if (!match) {
+      flush(input.slice(escIndex, escIndex + 1));
+      index = escIndex + 1;
+      continue;
+    }
+    const codes = (match[1] || "0")
+      .split(";")
+      .map((part) => Number(part || 0))
+      .filter((code) => Number.isFinite(code));
+    if (codes.length === 0 || codes.includes(0)) {
+      classes = [];
+    }
+    if (codes.includes(1)) {
+      classes = classes.filter((name) => name !== "ansi-bold");
+      classes.push("ansi-bold");
+    }
+    codes.forEach((code) => {
+      if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) {
+        classes = classes.filter((name) => !/^ansi-fg-/.test(name));
+        classes.push(`ansi-fg-${code}`);
+      }
+      if (code === 39) {
+        classes = classes.filter((name) => !/^ansi-fg-/.test(name));
+      }
+      if (code === 22) {
+        classes = classes.filter((name) => name !== "ansi-bold");
+      }
+    });
+    index = escIndex + match[0].length;
+  }
+  return html;
+}
+
+function detectRuntimeLogLevel(text) {
+  const value = String(text || "").toLowerCase();
+  if (/traceback|fatal|exception|error|failed|cannot|could not|invalid|denied/.test(value)) {
+    return "error";
+  }
+  if (/warn|warning|deprecated|retry|fallback|slow|stall/.test(value)) {
+    return "warn";
+  }
+  if (/started|ready|listening|loaded|completed|success|using /.test(value)) {
+    return "success";
+  }
+  return "info";
+}
+
+function runtimeLogMatchesFilter(entry) {
+  const filter = String(el.comfyRuntimeLogFilter?.value || "all");
+  if (filter === "stderr") return entry.stream === "stderr";
+  if (filter === "stdout") return entry.stream === "stdout";
+  if (filter === "important") return entry.level === "warn" || entry.level === "error";
+  return true;
+}
+
+function renderComfyRuntimeLogs() {
+  if (!el.comfyRuntimeLog) return;
+  el.comfyRuntimeLog.innerHTML = "";
+  const visible = state.comfyRuntimeLogs.filter(runtimeLogMatchesFilter);
+  if (!visible.length) {
+    el.comfyRuntimeLog.textContent = "Ready";
+    return;
+  }
+  visible.forEach((entry) => {
+    const line = document.createElement("div");
+    line.className = `ansi-log-line stream-${entry.stream} level-${entry.level}`;
+    line.innerHTML = `<span class="ansi-log-meta">[${escapeHtml(entry.stamp)}]</span><span class="ansi-log-dot" aria-hidden="true"></span>${ansiToHtml(entry.text)}`;
+    el.comfyRuntimeLog.appendChild(line);
+  });
+}
+
+function logComfyRuntimeLine(text, stream = "stdout") {
+  const stamp = new Date()
+    .toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true })
+    .replace(/\s+/g, " ")
+    .toUpperCase();
+  state.comfyRuntimeLogs.unshift({
+    text: String(text || ""),
+    stream: String(stream || "stdout").toLowerCase() === "stderr" ? "stderr" : "stdout",
+    stamp,
+    level: detectRuntimeLogLevel(text),
+  });
+  if (state.comfyRuntimeLogs.length > 500) {
+    state.comfyRuntimeLogs.length = 500;
+  }
+  renderComfyRuntimeLogs();
 }
 
 function setStartupStatus(text) {
@@ -1733,7 +1864,7 @@ function updateDownloadButtons() {
     el.downloadLora.textContent = "Cancel Download";
     el.downloadWorkflow.textContent = "Cancel Download";
   } else {
-    el.downloadModel.textContent = "Download Model Assets";
+    el.downloadModel.textContent = "Download Selected Model Assets";
     el.downloadLora.textContent = "Download LoRA";
     el.downloadWorkflow.textContent = "Download Workflow";
   }
@@ -1909,24 +2040,197 @@ function workflowFamilyOptions(workflows) {
   return [{ value: "all", label: "All Workflow Families" }, ...families.map((f) => ({ value: f, label: f }))];
 }
 
-function refreshModelSelectors() {
-  if (!state.catalog) return;
-
+function filteredModelsForCurrentSelection() {
+  if (!state.catalog) return [];
   const family = el.modelFamily.value || "all";
-  const filtered = state.catalog.models.filter((m) => family === "all" || m.family === family);
-  const modelOptions = filtered.map((m) => ({ value: m.id, label: m.display_name }));
-  setOptions(el.modelId, modelOptions);
+  const search = String(el.modelSearch?.value || "").trim().toLowerCase();
+  return state.catalog.models.filter((model) => {
+    if (family !== "all" && model.family !== family) return false;
+    if (!search) return true;
+    const haystack = `${model.display_name} ${model.family} ${model.id}`.toLowerCase();
+    return haystack.includes(search);
+  });
+}
 
-  const selectedModel = state.catalog.models.find((m) => m.id === el.modelId.value);
+function variantsForModelAndTier(model, tier) {
+  return (model?.variants || []).filter((variant) => variant.tier === tier);
+}
+
+function modelVariantLabel(variant) {
+  return [variant.model_size, variant.quantization, variant.note, variant.tier?.toUpperCase?.()]
+    .filter(Boolean)
+    .join(DOT_SEP);
+}
+
+function selectedModelItems() {
+  const items = [];
+  state.selectedModelVariants.forEach((variantId, modelId) => {
+    const model = state.catalog?.models?.find((entry) => entry.id === modelId);
+    if (!model) return;
+    const variant = (model.variants || []).find((entry) => entry.id === variantId);
+    if (!variant) return;
+    items.push({
+      modelId,
+      variantId,
+      label: `${model.display_name}${variant ? `${DOT_SEP}${modelVariantLabel(variant)}` : ""}`,
+    });
+  });
+  return items;
+}
+
+function updateModelSelectionSummary() {
+  if (!el.modelSelectionSummary) return;
+  const items = selectedModelItems();
+  if (!items.length) {
+    el.modelSelectionSummary.textContent = "No models selected.";
+    return;
+  }
+  if (items.length === 1) {
+    el.modelSelectionSummary.textContent = `1 model selected${DOT_SEP}${items[0].label}`;
+    return;
+  }
+  el.modelSelectionSummary.textContent = `${items.length} models selected.`;
+}
+
+function renderSelectedModelQueue() {
+  if (!el.selectedModelQueue) return;
+  const items = selectedModelItems();
+  el.selectedModelQueue.innerHTML = "";
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-msg";
+    empty.textContent = "No models selected yet.";
+    el.selectedModelQueue.appendChild(empty);
+    return;
+  }
+
+  items
+    .sort((a, b) => a.label.localeCompare(b.label))
+    .forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "queue-item";
+      const head = document.createElement("div");
+      head.className = "queue-item-head";
+      const title = document.createElement("div");
+      title.className = "queue-item-title";
+      title.textContent = item.label;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.textContent = "Remove";
+      remove.addEventListener("click", () => {
+        state.selectedModelVariants.delete(item.modelId);
+        renderModelSelectionList();
+      });
+      head.appendChild(title);
+      head.appendChild(remove);
+      row.appendChild(head);
+      el.selectedModelQueue.appendChild(row);
+    });
+}
+
+function renderModelSelectionList() {
+  if (!el.modelSelectionList) return;
+  const models = filteredModelsForCurrentSelection();
   const tier = el.vramTier.value;
-  const variants = (selectedModel?.variants || [])
-    .filter((v) => v.tier === tier)
-    .map((v) => ({
-      value: v.id,
-      label: [v.model_size, v.quantization, v.note, v.tier?.toUpperCase?.()].filter(Boolean).join(DOT_SEP),
-    }));
+  el.modelSelectionList.innerHTML = "";
 
-  setOptions(el.variantId, variants.length ? variants : [{ value: "", label: "No variant for selected VRAM tier" }]);
+  if (!models.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-msg";
+    empty.textContent = "No models available for this filter.";
+    el.modelSelectionList.appendChild(empty);
+    updateModelSelectionSummary();
+    renderSelectedModelQueue();
+    return;
+  }
+
+  models.forEach((model) => {
+    const variants = variantsForModelAndTier(model, tier);
+    const selectedVariantId = state.selectedModelVariants.get(model.id);
+    const fallbackVariantId = variants[0]?.id || "";
+    const currentVariantId = variants.some((variant) => variant.id === selectedVariantId)
+      ? selectedVariantId
+      : fallbackVariantId;
+
+    if (state.selectedModelVariants.has(model.id) && currentVariantId) {
+      state.selectedModelVariants.set(model.id, currentVariantId);
+    } else if (!currentVariantId) {
+      state.selectedModelVariants.delete(model.id);
+    }
+
+    const row = document.createElement("div");
+    row.className = "model-select-item";
+    const head = document.createElement("div");
+    head.className = "model-select-head";
+
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = Boolean(currentVariantId && state.selectedModelVariants.has(model.id));
+    box.disabled = !currentVariantId;
+    box.addEventListener("change", () => {
+      if (box.checked && currentVariantId) {
+        state.selectedModelVariants.set(model.id, currentVariantId);
+      } else {
+        state.selectedModelVariants.delete(model.id);
+      }
+      updateModelSelectionSummary();
+      renderSelectedModelQueue();
+    });
+
+    const labelWrap = document.createElement("div");
+    labelWrap.className = "model-select-label";
+    const title = document.createElement("div");
+    title.className = "model-select-title";
+    title.textContent = model.display_name;
+    const meta = document.createElement("div");
+    meta.className = "model-select-meta";
+    meta.textContent = `${model.family}${variants.length ? `${DOT_SEP}${variants.length} variant${variants.length === 1 ? "" : "s"} for ${String(tier || "").toUpperCase()}` : `${DOT_SEP}No variant for ${String(tier || "").toUpperCase()}`}`;
+    labelWrap.appendChild(title);
+    labelWrap.appendChild(meta);
+
+    const variantSelect = document.createElement("select");
+    const variantOptions = variants.length
+      ? variants.map((variant) => ({ value: variant.id, label: modelVariantLabel(variant) }))
+      : [{ value: "", label: "No variant for selected VRAM tier", disabled: true }];
+    setOptions(variantSelect, variantOptions, currentVariantId);
+    variantSelect.disabled = !variants.length;
+    variantSelect.addEventListener("change", () => {
+      const nextVariantId = String(variantSelect.value || "").trim();
+      if (box.checked && nextVariantId) {
+        state.selectedModelVariants.set(model.id, nextVariantId);
+      }
+      updateModelSelectionSummary();
+      renderSelectedModelQueue();
+    });
+
+    head.appendChild(box);
+    head.appendChild(labelWrap);
+    head.appendChild(variantSelect);
+    row.appendChild(head);
+    el.modelSelectionList.appendChild(row);
+  });
+
+  updateModelSelectionSummary();
+  renderSelectedModelQueue();
+}
+
+async function refreshEffectiveDownloadDestination() {
+  if (!el.effectiveDownloadDestination) return;
+  const root = String(el.comfyRoot.value || "").trim();
+  if (!root) {
+    el.effectiveDownloadDestination.textContent = "Download destination: Select your ComfyUI root folder first.";
+    return;
+  }
+  try {
+    const result = await invoke("get_effective_download_destination", { comfyuiRoot: root });
+    const effectiveRoot = String(result?.effective_root || root).trim();
+    const usesShared = result?.uses_shared_default === true;
+    el.effectiveDownloadDestination.textContent = usesShared
+      ? `Download destination: ${effectiveRoot} (shared models default is active)`
+      : `Download destination: ${effectiveRoot}`;
+  } catch (err) {
+    el.effectiveDownloadDestination.textContent = `Download destination unavailable: ${err}`;
+  }
 }
 
 function refreshLoraSelectors() {
@@ -2151,6 +2455,12 @@ async function bootstrap() {
   if (el.flagDisableSmartMemory) {
     el.flagDisableSmartMemory.checked = settings.comfyui_disable_smart_memory_enabled === true;
   }
+  if (el.comfyCustomLaunchArgs) {
+    el.comfyCustomLaunchArgs.value = String(settings.comfyui_custom_launch_args || "");
+  }
+  if (el.comfyShowRuntimeLogs) {
+    el.comfyShowRuntimeLogs.checked = settings.comfyui_show_runtime_logs !== false;
+  }
   if (el.enableHfXet) {
     el.enableHfXet.checked = settings.hf_xet_enabled === true;
   }
@@ -2267,7 +2577,8 @@ async function bootstrap() {
   setOptions(el.modelFamily, familyOptions(catalog.models));
   setOptions(el.vramTier, vramOptions.map((v) => ({ value: v.id, label: v.label })), "tier_s");
   setOptions(el.ramTier, ramOptions.map((r) => ({ value: r.id, label: r.label })), "tier_a");
-  refreshModelSelectors();
+  renderModelSelectionList();
+  await refreshEffectiveDownloadDestination();
 
   setOptions(el.loraFamily, loraFamilyOptions(catalog.loras));
   refreshLoraSelectors();
@@ -2294,9 +2605,22 @@ el.tabModels.addEventListener("click", () => switchTab("models"));
 el.tabLoras.addEventListener("click", () => switchTab("loras"));
 el.tabWorkflows.addEventListener("click", () => switchTab("workflows"));
 
-el.modelFamily.addEventListener("change", refreshModelSelectors);
-el.modelId.addEventListener("change", refreshModelSelectors);
-el.vramTier.addEventListener("change", refreshModelSelectors);
+el.modelFamily.addEventListener("change", renderModelSelectionList);
+el.vramTier.addEventListener("change", renderModelSelectionList);
+el.modelSearch?.addEventListener("input", renderModelSelectionList);
+el.selectVisibleModels?.addEventListener("click", () => {
+  filteredModelsForCurrentSelection().forEach((model) => {
+    const variants = variantsForModelAndTier(model, el.vramTier.value);
+    if (variants[0]?.id) {
+      state.selectedModelVariants.set(model.id, state.selectedModelVariants.get(model.id) || variants[0].id);
+    }
+  });
+  renderModelSelectionList();
+});
+el.clearModelSelection?.addEventListener("click", () => {
+  state.selectedModelVariants.clear();
+  renderModelSelectionList();
+});
 
 el.loraFamily.addEventListener("change", () => {
   refreshLoraSelectors();
@@ -2316,6 +2640,7 @@ el.saveRoot.addEventListener("click", async () => {
       el.comfyRootWorkflow.value = el.comfyRoot.value;
     }
     await loadInstalledAddonState(el.comfyRoot.value);
+    await refreshEffectiveDownloadDestination();
     const original = el.saveRoot.textContent;
     el.saveRoot.textContent = "Saved";
     el.saveRoot.disabled = true;
@@ -2340,9 +2665,14 @@ el.chooseRoot.addEventListener("click", async () => {
     }
     logLine("ComfyUI folder selected.");
     await loadInstalledAddonState(selected);
+    await refreshEffectiveDownloadDestination();
   } catch (err) {
     logLine(`Choose folder failed: ${err}`);
   }
+});
+
+el.comfyRoot?.addEventListener("input", () => {
+  refreshEffectiveDownloadDestination().catch(() => {});
 });
 
 el.saveRootLora.addEventListener("click", async () => {
@@ -2458,6 +2788,7 @@ el.chooseExtraModelRoot?.addEventListener("click", async () => {
     if (state.comfyMode === "manage") {
       await persistComfyExtraModelConfigForRoot(el.comfyExistingInstall?.value || el.comfyRoot.value);
     }
+    await refreshEffectiveDownloadDestination();
     logComfyLine("Optional extra models folder selected.");
   } catch (err) {
     logComfyLine(`Choose extra models folder failed: ${err}`);
@@ -2476,6 +2807,7 @@ el.clearExtraModelRoot?.addEventListener("click", async () => {
   if (state.comfyMode === "manage") {
     await persistComfyExtraModelConfigForRoot(el.comfyExistingInstall?.value || el.comfyRoot.value);
   }
+  await refreshEffectiveDownloadDestination();
   logComfyLine("Optional extra models folder cleared.");
 });
 
@@ -2490,6 +2822,7 @@ el.comfyExtraModelDefault?.addEventListener("change", async () => {
   if (state.comfyMode === "manage") {
     await persistComfyExtraModelConfigForRoot(el.comfyExistingInstall?.value || el.comfyRoot.value);
   }
+  await refreshEffectiveDownloadDestination();
 });
 
 el.comfyExtraModelRoot?.addEventListener("change", async () => {
@@ -2502,6 +2835,7 @@ el.comfyExtraModelRoot?.addEventListener("change", async () => {
   if (state.comfyMode === "manage") {
     await persistComfyExtraModelConfigForRoot(el.comfyExistingInstall?.value || el.comfyRoot.value);
   }
+  await refreshEffectiveDownloadDestination();
 });
 
 el.comfyMode?.addEventListener("change", async () => {
@@ -2693,6 +3027,41 @@ el.flagDisableSmartMemory?.addEventListener("change", () => {
   applyComponentToggleFromCheckbox(el.flagDisableSmartMemory, "launch_disable_smart_memory", "--disable-smart-memory")
     .catch((err) => logComfyLine(String(err)));
 });
+el.saveComfyCustomLaunchArgs?.addEventListener("click", async () => {
+  try {
+    state.settings = await invoke("set_comfyui_custom_launch_args", {
+      customLaunchArgs: String(el.comfyCustomLaunchArgs?.value || ""),
+    });
+    if (el.comfyCustomLaunchArgs) {
+      el.comfyCustomLaunchArgs.value = String(state.settings?.comfyui_custom_launch_args || "");
+    }
+    logComfyLine("Custom launch args saved.");
+  } catch (err) {
+    logComfyLine(`Saving custom launch args failed: ${err}`);
+  }
+});
+el.clearComfyCustomLaunchArgs?.addEventListener("click", async () => {
+  try {
+    state.settings = await invoke("set_comfyui_custom_launch_args", { customLaunchArgs: "" });
+    if (el.comfyCustomLaunchArgs) {
+      el.comfyCustomLaunchArgs.value = "";
+    }
+    logComfyLine("Custom launch args cleared.");
+  } catch (err) {
+    logComfyLine(`Clearing custom launch args failed: ${err}`);
+  }
+});
+el.comfyShowRuntimeLogs?.addEventListener("change", async () => {
+  const enabled = el.comfyShowRuntimeLogs.checked;
+  try {
+    state.settings = await invoke("set_comfyui_show_runtime_logs", { enabled });
+    el.comfyShowRuntimeLogs.checked = state.settings?.comfyui_show_runtime_logs !== false;
+    logComfyLine(el.comfyShowRuntimeLogs.checked ? "Runtime log streaming enabled." : "Runtime log streaming disabled.");
+  } catch (err) {
+    el.comfyShowRuntimeLogs.checked = !enabled;
+    logComfyLine(`Runtime log toggle failed: ${err}`);
+  }
+});
 el.nodeComfyuiManager?.addEventListener("change", () => {
   applyComponentToggleFromCheckbox(el.nodeComfyuiManager, "node_comfyui_manager", "comfyui-manager")
     .catch((err) => logComfyLine(String(err)));
@@ -2738,6 +3107,13 @@ el.comfyFreshBtn?.addEventListener("click", async () => {
 
 el.comfyClearInstallLog?.addEventListener("click", () => {
   if (el.comfyInstallLog) el.comfyInstallLog.textContent = "Ready";
+});
+el.comfyClearRuntimeLog?.addEventListener("click", () => {
+  state.comfyRuntimeLogs = [];
+  renderComfyRuntimeLogs();
+});
+el.comfyRuntimeLogFilter?.addEventListener("change", () => {
+  renderComfyRuntimeLogs();
 });
 
 el.clearStatusLog?.addEventListener("click", () => {
@@ -3074,6 +3450,14 @@ async function initEventListeners() {
         refreshComfyRuntimeStatus().catch(() => {});
       }
     });
+
+    await listen("comfyui-runtime-log", (event) => {
+      const p = event.payload || {};
+      const text = String(p.text || "").trim();
+      if (text) {
+        logComfyRuntimeLine(text, String(p.stream || "stdout").trim() || "stdout");
+      }
+    });
   } catch (err) {
     logLine(`Event listener setup failed: ${err}`);
   }
@@ -3084,19 +3468,33 @@ el.downloadModel.addEventListener("click", async () => {
     await requestCancelDownload();
     return;
   }
-  if (!el.modelId.value || !el.variantId.value) {
-    logLine("Select a model and variant first.");
+  const items = selectedModelItems();
+  if (!items.length) {
+    logLine("Select at least one model first.");
     return;
   }
   beginBusyDownload("Starting model download...");
   try {
-    await invoke("download_model_assets", {
-      modelId: el.modelId.value,
-      variantId: el.variantId.value,
-      ramTier: el.ramTier.value,
-      comfyuiRoot: el.comfyRoot.value,
-    });
-    logLine("Model download started.");
+    if (items.length === 1) {
+      await invoke("download_model_assets", {
+        modelId: items[0].modelId,
+        variantId: items[0].variantId,
+        ramTier: el.ramTier.value,
+        comfyuiRoot: el.comfyRoot.value,
+      });
+    } else {
+      await invoke("download_model_assets_batch", {
+        request: {
+          items: items.map((item) => ({
+            modelId: item.modelId,
+            variantId: item.variantId,
+          })),
+          ramTier: el.ramTier.value,
+          comfyuiRoot: el.comfyRoot.value,
+        },
+      });
+    }
+    logLine(items.length === 1 ? "Model download started." : `Started ${items.length} model downloads.`);
   } catch (err) {
     logLine(String(err));
     endBusyDownload();
