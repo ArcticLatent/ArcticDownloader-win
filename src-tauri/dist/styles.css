@@ -430,6 +430,40 @@ input[type="checkbox"] {
   min-height: 32px;
   padding: 6px 10px;
 }
+.queue-item-artifacts {
+  display: grid;
+  gap: 8px;
+  padding-top: 2px;
+}
+.queue-item-subheader {
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #9db8f7;
+}
+.queue-artifact-group {
+  display: grid;
+  gap: 4px;
+}
+.queue-artifact-group-label {
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+.queue-artifact-list {
+  display: grid;
+  gap: 4px;
+}
+.queue-artifact-item {
+  font-size: 0.78rem;
+  color: var(--text);
+  line-height: 1.35;
+  border: 1px solid #273047;
+  border-radius: 8px;
+  background: #0f1522;
+  padding: 6px 8px;
+  word-break: break-word;
+}
 .model-select-item {
   border: 1px solid #2c3345;
   border-radius: 10px;

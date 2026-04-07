@@ -1,0 +1,116 @@
+ArcticDownloader 0.2.1 update log
+
+Purpose:
+- Track code changes made in the Linux workspace so they can be mirrored in the Windows workspace.
+
+Format:
+- Date
+- Change summary
+- Files changed
+- Notes
+
+Entries:
+- 2026-04-06
+  - Added the 0.2.1 manage-mode loading-state update so switching between existing ComfyUI installs uses the full-screen startup loader instead of leaving the current UI static.
+  - Files changed:
+    - src-tauri/dist/main.js
+    - version0.2.1_updates
+  - Notes:
+    - Switching to a different detected install while already in `Manage Existing` now shows the same blocking loader style used during app startup.
+    - The loader text updates during the switch so users can tell whether the app is stopping ComfyUI first or loading the newly selected install.
+    - Entering `Manage Existing` through `Use Selected` now uses the same loader treatment for consistency.
+    - Manage-mode controls are temporarily disabled while that switch is in progress to avoid duplicate actions.
+- 2026-04-06
+  - Hid the existing-install quick-actions row when the user switches back to `Install New` so that mode no longer shows the previously managed ComfyUI path.
+  - Files changed:
+    - src-tauri/dist/main.js
+    - version0.2.1_updates
+  - Notes:
+    - The `Last install` / quick-actions block now only appears in `Manage Existing` when a detected install is actually selected.
+    - Switching back to `Install New` keeps that row out of view to avoid implying the old install is part of the new-install workflow.
+- 2026-04-06
+  - Hid the detected-install selector row in `Install New` so users no longer see the existing ComfyUI picker under the mode dropdown unless they are actively using `Manage Existing`.
+  - Files changed:
+    - src-tauri/dist/index.html
+    - src-tauri/dist/main.js
+    - version0.2.1_updates
+  - Notes:
+    - The row containing the existing-install dropdown, `Check ComfyUI`, and `Use Selected` now only appears in `Manage Existing`.
+    - `Install New` keeps only the controls relevant to creating a new install, which removes the confusing signal that an already installed ComfyUI is part of that flow.
+- 2026-04-06
+  - Extended the 0.2.1 full-screen loading treatment to the mode-dropdown path so switching from `Install New` into `Manage Existing` also shows the startup-style loader while the managed install is loaded.
+  - Files changed:
+    - src-tauri/dist/main.js
+    - version0.2.1_updates
+  - Notes:
+    - The full-screen loader now appears whether users enter manage mode by changing the mode dropdown or by using the existing install selector flow.
+    - This keeps the manage-entry behavior consistent and makes it clearer that the app is actively loading the selected ComfyUI install.
+- 2026-04-06
+  - Added Flatpak packaging to the Linux build and release flow so the scripts now build, checksum, manifest, and upload a `.flatpak` bundle alongside the existing Arch, Debian, and RPM artifacts.
+  - Files changed:
+    - packaging/build-packages.sh
+    - packaging/README.md
+    - packaging/flatpak/io.github.ArcticHelper.yml
+    - packaging/flatpak/io.github.ArcticHelper.metainfo.xml
+    - scripts/build-release-linux.sh
+    - scripts/release-linux.sh
+    - version0.2.1_updates
+  - Notes:
+    - Added a dedicated Flatpak target that stages the already-built app binary and shared desktop/icon metadata into a Flatpak bundle for `io.github.ArcticHelper`.
+    - The full Linux release flow now treats `.flatpak` as a first-class artifact for output copying, `SHA256SUMS`, `linux-release.json`, and GitHub release uploads.
+    - The Flatpak build uses Flathub as the runtime source and produces a single-file bundle suitable for attaching to GitHub releases.
+- 2026-04-06
+  - Updated the new Flatpak manifest to target GNOME runtime 50 instead of 48 so it matches the current GNOME release baseline.
+  - Files changed:
+    - packaging/flatpak/io.github.ArcticHelper.yml
+    - version0.2.1_updates
+  - Notes:
+    - GNOME 50 was released on March 18, 2026, so the Flatpak runtime target was bumped to `org.gnome.Platform//50`.
+- 2026-04-06
+  - Added an `Always Artifacts` view inside the Models tab `Selected Queue` so users can see the extra files that will always be downloaded alongside each selected model.
+  - Files changed:
+    - src-tauri/dist/main.js
+    - src-tauri/dist/styles.css
+    - version0.2.1_updates
+  - Notes:
+    - The selected-model queue now renders each model's catalog `always` groups directly under the selected item.
+    - Artifact names are deduplicated for display and filtered against the currently selected RAM tier so the list better matches what the downloader will actually fetch.
+    - Changing the RAM tier now refreshes the queue so the `Always Artifacts` list stays in sync with RAM-gated artifacts.
+- 2026-04-06
+  - Made the Models RAM dropdown use custom catalog RAM thresholds when exactly one selected model defines them, instead of always showing the generic hardcoded labels.
+  - Files changed:
+    - src-tauri/dist/main.js
+    - version0.2.1_updates
+  - Notes:
+    - When a single selected model includes `ram_tier_thresholds`, the RAM dropdown now shows labels derived from that model's configured cutoffs.
+    - If no model is selected or multiple models are selected, the dropdown falls back to the generic `Tier A/B/C` labels so mixed-model selections do not show misleading custom ranges.
+- 2026-04-06
+  - Expanded the Models tab queue and selector UX so users can see the exact selected variant files, start from clearer dropdown placeholders, and avoid mixed-family ambiguity.
+  - Files changed:
+    - src-tauri/dist/main.js
+    - src-tauri/dist/styles.css
+    - CHANGELOG_0.2.1.md
+    - version0.2.1_updates
+  - Notes:
+    - The `Selected Queue` now shows the actual selected variant file names, including all files for multi-file variants such as WAN/LTX-style split downloads.
+    - The Models dropdowns now start with placeholder-style defaults: `MODELS`, `GPU VRAM`, and `RAM`.
+    - The model list waits for the required selections and the empty state now explains that users should choose model family, GPU VRAM, and RAM first.
+    - The synthetic `All Model Families` option was removed so family-specific RAM-threshold behavior no longer gets muddied by mixed-family views.
+- 2026-04-06
+  - Changed startup catalog refresh to always fetch the remote catalog body instead of relying on conditional ETag/304 behavior.
+  - Files changed:
+    - src/catalog.rs
+    - CHANGELOG_0.2.1.md
+    - version0.2.1_updates
+  - Notes:
+    - This makes newly published remote catalog changes show up more reliably at app startup.
+    - The app still keeps cached catalog data as a fallback, but refresh now always requests the full remote JSON during boot.
+- 2026-04-06
+  - Fixed the Fedora RPM spec dependency name for AppIndicator so Fedora package builds use the pkg-config provider Fedora actually exposes.
+  - Files changed:
+    - packaging/fedora/arctic-comfyui-helper.spec
+    - version0.2.1_updates
+  - Notes:
+    - Replaced `pkgconfig(ayatana-appindicator3-0.1)` with `pkgconfig(appindicator3-0.1)` in the RPM build requirements.
+- Fedora RPM packaging now uses the Ayatana AppIndicator development/runtime packages that Tauri's Linux tray dependency actually requires, and the distrobox bootstrap now explicitly checks for and installs `libayatana-appindicator-gtk3-devel` before building.
+- Flatpak packaging now exports the app on the `stable` branch before bundling, fixing the `Refspec 'app/io.github.ArcticHelper/x86_64/stable' not found` error at the final `flatpak build-bundle` step.

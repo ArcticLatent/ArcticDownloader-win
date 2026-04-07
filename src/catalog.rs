@@ -121,46 +121,14 @@ impl CatalogService {
             .build()
             .context("failed to build HTTP client for catalog refresh")?;
 
-        let mut request = client.get(&url);
-        if let Some(etag) = settings
-            .last_catalog_etag
-            .as_deref()
-            .filter(|etag| !etag.is_empty())
-        {
-            request = request.header(header::IF_NONE_MATCH, etag);
-        }
-
         info!("Refreshing catalog from {url}");
-        let mut response = request
+        let response = client
+            .get(&url)
             .send()
             .await
             .with_context(|| format!("failed to fetch remote catalog from {url}"))?;
 
         match response.status() {
-            StatusCode::NOT_MODIFIED => {
-                // Migration safety: older app versions could cache a lossy catalog
-                // missing newly added sections (e.g. `workflows`). If we detect
-                // that case, force one full fetch without ETag.
-                if !cached_catalog_contains_key(&self.cached_catalog_path(), "workflows") {
-                    info!("Catalog cache is missing `workflows`; forcing a full remote fetch.");
-                    response = client
-                        .get(&url)
-                        .send()
-                        .await
-                        .with_context(|| format!("failed forced catalog fetch from {url}"))?;
-                    if response.status() != StatusCode::OK {
-                        warn!(
-                            "Forced catalog fetch skipped: server returned {} ({:?})",
-                            response.status().as_u16(),
-                            response.status()
-                        );
-                        return Ok(false);
-                    }
-                } else {
-                    info!("Remote catalog is up to date (HTTP 304).");
-                    return Ok(false);
-                }
-            }
             StatusCode::OK => {}
             status => {
                 warn!(
@@ -281,12 +249,4 @@ fn load_cached_catalog(config: &ConfigStore) -> Option<ModelCatalog> {
 
 fn cached_catalog_path(config: &ConfigStore) -> PathBuf {
     config.cache_path().join(CACHED_CATALOG_FILE)
-}
-
-fn cached_catalog_contains_key(path: &Path, key: &str) -> bool {
-    let Ok(text) = fs::read_to_string(path) else {
-        return false;
-    };
-    let needle = format!("\"{key}\"");
-    text.contains(&needle)
 }
