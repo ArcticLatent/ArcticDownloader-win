@@ -2,6 +2,7 @@ const invoke = window.__TAURI__?.core?.invoke;
 const listen = window.__TAURI__?.event?.listen || window.__TAURI__?.core?.listen;
 const DOT_SEP = " \u2022 ";
 const PATH_SEP = "/";
+const ALWAYS_ONLY_VARIANT_ID = "__always_only__";
 const state = {
   catalog: null,
   settings: null,
@@ -87,6 +88,7 @@ const el = {
   transferList: document.getElementById("transfer-list"),
   completedList: document.getElementById("completed-list"),
   checkUpdates: document.getElementById("check-updates"),
+  refreshCatalog: document.getElementById("refresh-catalog"),
   appVersionTag: document.getElementById("app-version-tag"),
 
   tabComfyui: document.getElementById("tab-comfyui"),
@@ -542,12 +544,6 @@ function updateComfyUpdateButton() {
 function updateUpdateButton() {
   if (!el.checkUpdates) return;
   el.checkUpdates.classList.remove("update-available");
-  if (state.updateFlashLabel) {
-    el.checkUpdates.textContent = state.updateFlashLabel;
-    el.checkUpdates.disabled = true;
-    renderAppVersionTag();
-    return;
-  }
   if (state.updateChecking) {
     el.checkUpdates.textContent = "Checking...";
     el.checkUpdates.disabled = true;
@@ -566,20 +562,6 @@ function updateUpdateButton() {
     el.checkUpdates.classList.add("update-available");
   }
   renderAppVersionTag();
-}
-
-function flashUpdateButton(label, durationMs = 2600) {
-  if (state.updateFlashTimer) {
-    window.clearTimeout(state.updateFlashTimer);
-    state.updateFlashTimer = null;
-  }
-  state.updateFlashLabel = String(label || "").trim();
-  updateUpdateButton();
-  state.updateFlashTimer = window.setTimeout(() => {
-    state.updateFlashLabel = "";
-    state.updateFlashTimer = null;
-    updateUpdateButton();
-  }, Math.max(600, Number(durationMs) || 2600));
 }
 
 function normalizeSlashes(value) {
@@ -2241,6 +2223,10 @@ function alwaysArtifactGroupsForModel(model, ramTier) {
     .filter((group) => group.artifacts.length > 0);
 }
 
+function modelHasAlwaysArtifacts(model) {
+  return alwaysArtifactGroupsForModel(model, el.ramTier?.value || "").length > 0;
+}
+
 function selectedVariantArtifactsForDisplay(variant, ramTier) {
   const artifacts = Array.isArray(variant?.artifacts) ? variant.artifacts : [];
   const seen = new Set();
@@ -2265,13 +2251,17 @@ function selectedModelItems() {
     const model = state.catalog?.models?.find((entry) => entry.id === modelId);
     if (!model) return;
     const variant = (model.variants || []).find((entry) => entry.id === variantId);
-    if (!variant) return;
+    const alwaysOnly = !variant && variantId === ALWAYS_ONLY_VARIANT_ID && modelHasAlwaysArtifacts(model);
+    if (!variant && !alwaysOnly) return;
     items.push({
       modelId,
       variantId,
       model,
-      variant,
-      label: `${model.display_name}${variant ? `${DOT_SEP}${modelVariantLabel(variant)}` : ""}`,
+      variant: variant || null,
+      alwaysOnly,
+      label: alwaysOnly
+        ? `${model.display_name}${DOT_SEP}Always Artifacts Only`
+        : `${model.display_name}${variant ? `${DOT_SEP}${modelVariantLabel(variant)}` : ""}`,
     });
   });
   return items;
@@ -2315,7 +2305,7 @@ function renderSelectedModelQueue() {
       const title = document.createElement("div");
       title.className = "queue-item-title";
       title.textContent = selectedArtifacts.length <= 1
-        ? (artifactFileName(selectedArtifacts[0]) || item.label)
+        ? (artifactFileName(selectedArtifacts[0]) || (item.alwaysOnly ? `${item.model.display_name}${DOT_SEP}Always Artifacts Only` : item.label))
         : `${selectedArtifacts.length} selected variant files`;
       const remove = document.createElement("button");
       remove.type = "button";
@@ -2390,12 +2380,10 @@ function renderSelectedModelQueue() {
 function renderModelSelectionList() {
   if (!el.modelSelectionList) return;
   const models = filteredModelsForCurrentSelection();
-  const family = String(el.modelFamily?.value || "").trim();
   const tier = String(el.vramTier?.value || "").trim();
-  const ramTier = String(el.ramTier?.value || "").trim();
   el.modelSelectionList.innerHTML = "";
 
-  if (!family || !tier || !ramTier) {
+  if (!tier) {
     const empty = document.createElement("div");
     empty.className = "empty-msg";
     empty.textContent = "Choose your model family, GPU VRAM, and RAM first.";
@@ -2418,10 +2406,13 @@ function renderModelSelectionList() {
   models.forEach((model) => {
     const variants = variantsForModelAndTier(model, tier);
     const selectedVariantId = state.selectedModelVariants.get(model.id);
-    const fallbackVariantId = variants[0]?.id || "";
+    const supportsAlwaysOnly = !variants.length && modelHasAlwaysArtifacts(model);
+    const fallbackVariantId = variants[0]?.id || (supportsAlwaysOnly ? ALWAYS_ONLY_VARIANT_ID : "");
     const currentVariantId = variants.some((variant) => variant.id === selectedVariantId)
       ? selectedVariantId
-      : fallbackVariantId;
+      : (supportsAlwaysOnly && selectedVariantId === ALWAYS_ONLY_VARIANT_ID)
+        ? ALWAYS_ONLY_VARIANT_ID
+        : fallbackVariantId;
 
     if (state.selectedModelVariants.has(model.id) && currentVariantId) {
       state.selectedModelVariants.set(model.id, currentVariantId);
@@ -2456,14 +2447,18 @@ function renderModelSelectionList() {
     title.textContent = model.display_name;
     const meta = document.createElement("div");
     meta.className = "model-select-meta";
-    meta.textContent = `${model.family}${variants.length ? `${DOT_SEP}${variants.length} variant${variants.length === 1 ? "" : "s"} for ${String(tier || "").toUpperCase()}` : `${DOT_SEP}No variant for ${String(tier || "").toUpperCase()}`}`;
+    meta.textContent = supportsAlwaysOnly
+      ? `${model.family}${DOT_SEP}Always artifacts only`
+      : `${model.family}${variants.length ? `${DOT_SEP}${variants.length} variant${variants.length === 1 ? "" : "s"} for ${String(tier || "").toUpperCase()}` : `${DOT_SEP}No variant for ${String(tier || "").toUpperCase()}`}`;
     labelWrap.appendChild(title);
     labelWrap.appendChild(meta);
 
     const variantSelect = document.createElement("select");
     const variantOptions = variants.length
       ? variants.map((variant) => ({ value: variant.id, label: modelVariantLabel(variant) }))
-      : [{ value: "", label: "No variant for selected VRAM tier", disabled: true }];
+      : (supportsAlwaysOnly
+        ? [{ value: ALWAYS_ONLY_VARIANT_ID, label: "Always Artifacts Only" }]
+        : [{ value: "", label: "No variant for selected VRAM tier", disabled: true }]);
     setOptions(variantSelect, variantOptions, currentVariantId);
     variantSelect.disabled = !variants.length;
     variantSelect.addEventListener("change", () => {
@@ -2846,22 +2841,7 @@ async function bootstrap() {
     loadInstalledAddonState(el.comfyRoot.value || "").catch(() => {});
   }, 0);
 
-  setOptions(el.modelFamily, familyOptions(catalog.models), "");
-  setOptions(el.vramTier, vramOptionsWithPlaceholder(), "");
-  updateRamTierOptions();
-  renderModelSelectionList();
-  await refreshEffectiveDownloadDestination();
-
-  setOptions(el.loraFamily, loraFamilyOptions(catalog.loras));
-  refreshLoraSelectors();
-  setTimeout(() => {
-    loadLoraMetadata().catch(() => {});
-  }, 0);
-
-  setOptions(el.workflowFamily, workflowFamilyOptions(catalog.workflows || []));
-  refreshWorkflowSelectors();
-
-  logLine(`Loaded ${catalog.models?.length || 0} models, ${catalog.loras?.length || 0} LoRAs, and ${catalog.workflows?.length || 0} workflows.`);
+  applyCatalogSnapshot(catalog, { resetSelectors: true });
   try {
     setStartupStatus("Checking downloader acceleration...");
     const xet = await invoke("get_hf_xet_preflight");
@@ -2870,6 +2850,31 @@ async function bootstrap() {
     }
   } catch (_) {}
   setStartupStatus("Starting UI...");
+}
+
+function applyCatalogSnapshot(catalog, { resetSelectors = false } = {}) {
+  state.catalog = catalog;
+  const currentModelFamily = resetSelectors ? "" : String(el.modelFamily?.value || "").trim();
+  const currentVramTier = resetSelectors ? "" : String(el.vramTier?.value || "").trim();
+  const currentLoraFamily = resetSelectors ? null : String(el.loraFamily?.value || "").trim();
+  const currentWorkflowFamily = resetSelectors ? null : String(el.workflowFamily?.value || "").trim();
+
+  setOptions(el.modelFamily, familyOptions(catalog.models), currentModelFamily);
+  setOptions(el.vramTier, vramOptionsWithPlaceholder(), currentVramTier);
+  updateRamTierOptions();
+  renderModelSelectionList();
+  refreshEffectiveDownloadDestination().catch(() => {});
+
+  setOptions(el.loraFamily, loraFamilyOptions(catalog.loras), currentLoraFamily);
+  refreshLoraSelectors();
+  setTimeout(() => {
+    loadLoraMetadata().catch(() => {});
+  }, 0);
+
+  setOptions(el.workflowFamily, workflowFamilyOptions(catalog.workflows || []), currentWorkflowFamily);
+  refreshWorkflowSelectors();
+
+  logLine(`Loaded ${catalog.models?.length || 0} models, ${catalog.loras?.length || 0} LoRAs, and ${catalog.workflows?.length || 0} workflows.`);
 }
 
 el.tabComfyui.addEventListener("click", () => switchTab("comfyui"));
@@ -2882,14 +2887,16 @@ el.vramTier.addEventListener("change", renderModelSelectionList);
 el.ramTier.addEventListener("change", renderModelSelectionList);
 el.modelSearch?.addEventListener("input", renderModelSelectionList);
 el.selectVisibleModels?.addEventListener("click", () => {
-  if (!String(el.modelFamily?.value || "").trim() || !String(el.vramTier?.value || "").trim() || !String(el.ramTier?.value || "").trim()) {
-    logLine("Choose model family, GPU VRAM, and RAM first.");
+  if (!String(el.vramTier?.value || "").trim()) {
+    logLine("Choose GPU VRAM first.");
     return;
   }
   filteredModelsForCurrentSelection().forEach((model) => {
     const variants = variantsForModelAndTier(model, el.vramTier.value);
     if (variants[0]?.id) {
       state.selectedModelVariants.set(model.id, state.selectedModelVariants.get(model.id) || variants[0].id);
+    } else if (modelHasAlwaysArtifacts(model)) {
+      state.selectedModelVariants.set(model.id, state.selectedModelVariants.get(model.id) || ALWAYS_ONLY_VARIANT_ID);
     }
   });
   renderModelSelectionList();
@@ -2897,6 +2904,19 @@ el.selectVisibleModels?.addEventListener("click", () => {
 el.clearModelSelection?.addEventListener("click", () => {
   state.selectedModelVariants.clear();
   renderModelSelectionList();
+});
+el.refreshCatalog?.addEventListener("click", async () => {
+  if (!invoke) return;
+  try {
+    showBlockingOverlay("Refreshing catalog...");
+    const catalog = await invoke("refresh_catalog");
+    applyCatalogSnapshot(catalog);
+    logLine("Catalog refreshed from remote.");
+  } catch (err) {
+    logLine(`Catalog refresh failed: ${err}`);
+  } finally {
+    hideStartupOverlay();
+  }
 });
 
 el.loraFamily.addEventListener("change", () => {
@@ -3470,54 +3490,53 @@ el.saveToken.addEventListener("click", async () => {
 });
 
 el.checkUpdates.addEventListener("click", async () => {
-  if (state.updateInstalling || state.updateChecking) return;
+  if (state.updateInstalling) return;
   if (state.updateAvailable) {
     try {
       state.updateInstalling = true;
       updateUpdateButton();
+      el.updateStatus.textContent = state.updateVersion
+        ? `Installing v${state.updateVersion}...`
+        : "Installing update...";
+      showBlockingOverlay("App updating... It will close now. Please launch it again after update.");
       await invoke("auto_update_startup");
     } catch (err) {
       state.updateInstalling = false;
       updateUpdateButton();
-      flashUpdateButton("Check Failed", 3200);
+      el.updateStatus.textContent = "Error";
       logLine(String(err));
+      hideStartupOverlay();
     }
     return;
   }
   try {
     state.updateChecking = true;
     updateUpdateButton();
-    const startedAt = Date.now();
+    el.updateStatus.textContent = "Checking...";
     const result = await invoke("check_updates_now");
-    const checkingElapsed = Date.now() - startedAt;
-    if (checkingElapsed < 700) {
-      await sleep(700 - checkingElapsed);
-    }
-    state.updateChecking = false;
     if (result.available) {
       state.updateAvailable = true;
       state.updateVersion = result.version || null;
-      state.updateFlashLabel = "";
-      if (state.updateFlashTimer) {
-        window.clearTimeout(state.updateFlashTimer);
-        state.updateFlashTimer = null;
-      }
+      el.updateStatus.textContent = "New update available";
       updateUpdateButton();
       logLine(`Update available: v${result.version}`);
     } else {
       state.updateAvailable = false;
       state.updateVersion = null;
-      flashUpdateButton("No Update", 4000);
+      el.updateStatus.textContent = "Up to date";
+      updateUpdateButton();
       logLine("No updates available.");
     }
   } catch (err) {
-    state.updateChecking = false;
     state.updateAvailable = false;
     state.updateVersion = null;
     state.updateInstalling = false;
-    flashUpdateButton("Check Failed", 4000);
     updateUpdateButton();
+    el.updateStatus.textContent = "Error";
     logLine(String(err));
+  } finally {
+    state.updateChecking = false;
+    updateUpdateButton();
   }
 });
 
@@ -3760,7 +3779,10 @@ el.downloadModel.addEventListener("click", async () => {
     await requestCancelDownload();
     return;
   }
-  const items = selectedModelItems();
+  const items = selectedModelItems().map((item) => ({
+    modelId: item.modelId,
+    variantId: item.variantId,
+  }));
   if (!items.length) {
     logLine("Select at least one model first.");
     return;
@@ -3776,16 +3798,15 @@ el.downloadModel.addEventListener("click", async () => {
         modelId: items[0].modelId,
         variantId: items[0].variantId,
         ramTier: el.ramTier.value,
+        vramTier: el.vramTier.value,
         comfyuiRoot: el.comfyRoot.value,
       });
     } else {
       await invoke("download_model_assets_batch", {
         request: {
-          items: items.map((item) => ({
-            modelId: item.modelId,
-            variantId: item.variantId,
-          })),
+          items,
           ramTier: el.ramTier.value,
+          vramTier: el.vramTier.value,
           comfyuiRoot: el.comfyRoot.value,
         },
       });

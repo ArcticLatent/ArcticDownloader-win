@@ -100,6 +100,21 @@ impl MasterModel {
             .find(|variant| variant.id == variant_id)
     }
 
+    pub fn synthetic_always_only_variant(&self, tier: VramTier) -> Option<ModelVariant> {
+        if self.variants.is_empty() && !self.always.is_empty() {
+            Some(ModelVariant {
+                id: "__always_only__".to_string(),
+                tier,
+                model_size: None,
+                quantization: None,
+                note: Some("Always Artifacts Only".to_string()),
+                artifacts: Vec::new(),
+            })
+        } else {
+            None
+        }
+    }
+
     pub fn artifacts_for_variant(
         &self,
         variant: &ModelVariant,

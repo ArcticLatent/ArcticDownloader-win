@@ -7,6 +7,7 @@ use arctic_downloader::{
     env_flags::auto_update_enabled,
     model::{LoraDefinition, ModelCatalog, WorkflowDefinition},
     ram::{detect_ram_profile, RamTier},
+    vram::VramTier,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -83,6 +84,8 @@ struct BatchModelDownloadItem {
 struct BatchModelDownloadRequest {
     items: Vec<BatchModelDownloadItem>,
     ram_tier: Option<String>,
+    #[serde(default)]
+    vram_tier: Option<String>,
     comfyui_root: Option<String>,
 }
 
@@ -3563,6 +3566,17 @@ fn get_catalog(state: State<'_, AppState>) -> ModelCatalog {
 }
 
 #[tauri::command]
+async fn refresh_catalog(state: State<'_, AppState>) -> Result<ModelCatalog, String> {
+    state
+        .context
+        .catalog
+        .refresh_from_remote()
+        .await
+        .map_err(|err| err.to_string())?;
+    Ok(state.context.catalog.catalog_snapshot())
+}
+
+#[tauri::command]
 fn get_settings(state: State<'_, AppState>) -> AppSettings {
     state.context.config.settings()
 }
@@ -3856,14 +3870,16 @@ async fn download_model_assets(
     model_id: String,
     variant_id: String,
     ram_tier: Option<String>,
+    vram_tier: Option<String>,
     comfyui_root: Option<String>,
 ) -> Result<(), String> {
     let root = resolve_root_path(&state.context, comfyui_root)?;
     let effective_root = effective_download_root(&root);
+    let selected_vram_tier = vram_tier.as_deref().and_then(parse_vram_tier);
     let resolved = state
         .context
         .catalog
-        .resolve_variant(&model_id, &variant_id)
+        .resolve_download_selection(&model_id, &variant_id, selected_vram_tier)
         .ok_or_else(|| "Selected model variant was not found in catalog.".to_string())?;
 
     let tier = ram_tier
@@ -3995,13 +4011,14 @@ async fn download_model_assets_batch(
         .as_deref()
         .and_then(parse_ram_tier)
         .or_else(|| state.context.ram_tier());
+    let selected_vram_tier = request.vram_tier.as_deref().and_then(parse_vram_tier);
 
     let mut resolved_items = Vec::new();
     for item in &request.items {
         let resolved = state
             .context
             .catalog
-            .resolve_variant(&item.model_id, &item.variant_id)
+            .resolve_download_selection(&item.model_id, &item.variant_id, selected_vram_tier)
             .ok_or_else(|| {
                 format!(
                     "Selected model variant was not found in catalog: {}/{}",
@@ -4643,6 +4660,10 @@ fn resolve_comfyui_instance_name(context: &AppContext, comfyui_root: Option<Stri
 
 fn parse_ram_tier(value: &str) -> Option<RamTier> {
     RamTier::from_identifier(value)
+}
+
+fn parse_vram_tier(value: &str) -> Option<VramTier> {
+    VramTier::from_identifier(value)
 }
 
 fn is_video_url(url: &str) -> bool {
@@ -7425,6 +7446,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_app_snapshot,
             get_catalog,
+            refresh_catalog,
             get_settings,
             inspect_comfyui_path,
             list_comfyui_installations,

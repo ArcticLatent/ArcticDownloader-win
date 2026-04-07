@@ -178,7 +178,7 @@ body {
   animation: spin 0.75s linear infinite;
 }
 .folder-row { grid-template-columns: 1fr auto auto; }
-.model-row { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.model-row { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 .lora-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
 .token-row { grid-template-columns: 1fr auto; }
 .torch-row { grid-template-columns: minmax(260px, 380px) 1fr; }

@@ -75,6 +75,30 @@ impl CatalogService {
         Some(ResolvedModel { master, variant })
     }
 
+    pub fn resolve_download_selection(
+        &self,
+        model_id: &str,
+        variant_id: &str,
+        fallback_tier: Option<VramTier>,
+    ) -> Option<ResolvedModel> {
+        let catalog = self.catalog_snapshot();
+        let master = catalog.models.into_iter().find(|m| m.id == model_id)?;
+
+        if let Some(variant) = master.find_variant(variant_id).cloned() {
+            return Some(ResolvedModel { master, variant });
+        }
+
+        let trimmed_variant_id = variant_id.trim();
+        if trimmed_variant_id.is_empty() || trimmed_variant_id == "__always_only__" {
+            let tier = fallback_tier.unwrap_or(VramTier::TierC);
+            if let Some(variant) = master.synthetic_always_only_variant(tier) {
+                return Some(ResolvedModel { master, variant });
+            }
+        }
+
+        None
+    }
+
     pub fn loras(&self) -> Vec<LoraDefinition> {
         self.catalog_snapshot().loras
     }

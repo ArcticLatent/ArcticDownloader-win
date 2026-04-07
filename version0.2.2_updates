@@ -1,0 +1,35 @@
+ArcticDownloader 0.2.2 update log
+
+Purpose:
+- Track code changes made in the Linux workspace so they can be mirrored in the Windows workspace.
+
+Format:
+- Date
+- Change summary
+- Files changed
+- Notes
+
+Entries:
+- 2026-04-07
+  - Added a manual `Refresh Catalog` action in the app header so the running app can pull the latest remote catalog without needing a full restart.
+  - Files changed:
+    - src-tauri/dist/index.html
+    - src-tauri/dist/main.js
+    - src-tauri/src/main.rs
+    - CHANGELOG_0.2.2.md
+    - version0.2.2_updates
+  - Notes:
+    - The refresh action calls a new backend catalog-refresh command and reloads the in-memory UI catalog snapshot immediately.
+    - This makes newly published remote catalog changes visible without closing and reopening the app.
+- 2026-04-07
+  - Added support for models that only define `always` artifacts and no VRAM variants so they still appear in the Models tab and can be downloaded.
+  - Files changed:
+    - src/model.rs
+    - src/catalog.rs
+    - src-tauri/src/main.rs
+    - src-tauri/dist/main.js
+    - CHANGELOG_0.2.2.md
+    - version0.2.2_updates
+  - Notes:
+    - These models now use an `Always Artifacts Only` selection path in the UI.
+    - The backend resolves a synthetic download selection for such models so the normal model download flow can still be reused.
