@@ -1,0 +1,144 @@
+ArcticDownloader 0.2.4 update log
+
+Purpose:
+- Track code changes made in the Linux workspace so they can be mirrored in the Windows workspace.
+
+Format:
+- Date
+- Change summary
+- Files changed
+- Notes
+
+Entries:
+- 2026-04-18
+  - Fixed Linux folder picker integration so the app uses the GTK XDG Desktop Portal backend instead of falling back to Zenity when choosing ComfyUI folders.
+  - Files changed:
+    - src-tauri/src/main.rs
+    - src-tauri/dist/main.js
+    - src-tauri/Cargo.lock
+    - packaging/arch/PKGBUILD
+    - packaging/aur-bin/PKGBUILD
+    - packaging/debian/debian/control
+    - packaging/fedora/arctic-comfyui-helper.spec
+    - CHANGELOG_0.2.4.md
+    - version0.2.4_updates
+  - Notes:
+    - `pick_folder` now accepts an optional title, and the frontend passes contextual titles for the ComfyUI root, install base, workflow root, and shared models root pickers.
+    - Direct `rfd` GTK backend testing was reverted because it could crash inside the Tauri/WebKit GTK runtime.
+    - Native Linux packages now declare `xdg-desktop-portal-gtk` as a runtime dependency so fresh installs get the desktop-native GTK-style picker instead of the Zenity fallback.
+- 2026-04-16
+  - Updated workflow catalog handling so workflow rows can open external links instead of always downloading JSON files.
+  - Files changed:
+    - src/model.rs
+    - src-tauri/dist/main.js
+    - CHANGELOG_0.2.3.md
+    - version0.2.3_updates
+  - Notes:
+    - Workflow catalog entries can now include optional `patreon_url`, `workflow_url`, or `workflow_link_url` fields.
+    - `workflow_json_url` is now serde-defaulted so link-only workflow entries can load without a JSON download URL.
+    - The workflow button label changes to `Open Workflow Link` for link-style entries and opens the URL through the existing external browser command.
+    - Workflow dropdown labels now prefer full-name fields such as `workflow_name`, `name`, or `title` before falling back to `display_name`.
+- 2026-04-15
+  - Reworked the Models tab hardware sizing logic from broad range labels to fixed standard hardware-size mappings.
+  - Files changed:
+    - src-tauri/dist/main.js
+    - src/vram.rs
+    - src/ram.rs
+    - Cargo.toml
+    - Cargo.lock
+    - src-tauri/Cargo.toml
+    - src-tauri/Cargo.lock
+    - src-tauri/tauri.conf.json
+    - packaging/arch/PKGBUILD
+    - packaging/debian/debian/changelog
+    - packaging/fedora/arctic-comfyui-helper.spec
+    - CHANGELOG_0.2.3.md
+    - version0.2.3_updates
+  - Notes:
+    - The hardware-size mappings match common fixed GPU VRAM and system RAM capacities.
+    - Removed the redundant `32+ GB VRAM` option from the fixed GPU VRAM mapping so 32 GB is represented once.
+    - The fixed-size values are mapped back to the existing internal catalog tiers so the current catalog schema remains compatible.
+    - The AUR binary package files should be updated with `scripts/update-aur-bin.sh --version 0.2.3` after the 0.2.3 Arch release artifact exists, so the checksum can be generated from the real package.
+- 2026-04-15
+  - Hid the Models tab GPU VRAM and RAM dropdowns and switched model guidance to automatic hardware detection.
+  - Files changed:
+    - src-tauri/dist/index.html
+    - src-tauri/dist/main.js
+    - src-tauri/dist/styles.css
+    - CHANGELOG_0.2.3.md
+    - version0.2.3_updates
+  - Notes:
+    - RAM guidance now uses the detected system RAM tier.
+    - GPU VRAM guidance uses the detected NVIDIA VRAM size when available.
+    - NVIDIA VRAM guidance now uses nominal MiB bands so 32 GB cards that report slightly under 32 GiB still map to the 32+ GB VRAM tier.
+    - If GPU VRAM size cannot be detected, the app still shows all manual variants without blocking downloads.
+- 2026-04-15
+  - Changed model variant selection to be manual instead of VRAM-filtered.
+  - Files changed:
+    - src-tauri/dist/main.js
+    - src/ram.rs
+    - CHANGELOG_0.2.3.md
+    - version0.2.3_updates
+  - Notes:
+    - The Models tab now shows all variants for the selected model family, with detected GPU VRAM used only to sort variants and warn when a variant may need more VRAM than detected.
+    - Model search now includes variant IDs, model sizes, quantization labels, and notes so users can find variants such as `3B Q8`.
+    - Model downloads no longer require choosing GPU VRAM or RAM first.
+    - RAM `min_ram_tier` checks now behave as minimum requirements, so a stronger RAM tier includes artifacts marked for weaker RAM tiers.
+- 2026-04-15
+  - Added exact RAM bucket support for alternative artifacts.
+  - Files changed:
+    - src/model.rs
+    - src-tauri/dist/main.js
+    - CHANGELOG_0.2.3.md
+    - version0.2.3_updates
+  - Notes:
+    - Artifacts can now use `ram_bucket` for exact RAM-bucket selection, which is intended for alternatives such as Q5/Q4/Q3 text encoders.
+    - `min_ram_tier` remains supported separately as a true minimum requirement.
+- 2026-04-15
+  - Added queue checkboxes for selectable model support files.
+  - Files changed:
+    - src-tauri/dist/main.js
+    - src-tauri/dist/styles.css
+    - src-tauri/src/main.rs
+    - CHANGELOG_0.2.3.md
+    - version0.2.3_updates
+  - Notes:
+    - RAM-bucketed support files are now all shown in the Selected Queue, but only the detected best RAM bucket is checked by default.
+    - Optional LoRAs, upscalers, and other support files are checked by default and can be unchecked before download.
+    - The selected checkbox set is passed to the backend so unchecked files are not downloaded.
+- 2026-04-15
+  - Replaced raw model family IDs with friendly family labels in the Models tab UI.
+  - Files changed:
+    - src-tauri/dist/main.js
+    - CHANGELOG_0.2.3.md
+    - version0.2.3_updates
+  - Notes:
+    - The model family dropdown still stores the catalog `family` ID internally, but users see labels derived from model display names, such as `LTX 2.3` or `FLUX 1`.
+- 2026-04-15
+  - Prioritized Clip and Text Encoder groups in the Selected Queue.
+  - Files changed:
+    - src-tauri/dist/main.js
+    - CHANGELOG_0.2.3.md
+    - version0.2.3_updates
+  - Notes:
+    - The catalog order is unchanged; the app only sorts the queue display so Clip/Text Encoder support files appear above optional extras.
+- 2026-04-15
+  - Made Models tab search global only when no model family is selected.
+  - Files changed:
+    - src-tauri/dist/main.js
+    - CHANGELOG_0.2.3.md
+    - version0.2.3_updates
+  - Notes:
+    - With an empty search box, the model family dropdown still filters normally.
+    - With no family selected, search text searches all model families.
+    - With a family selected, search text searches only inside that family.
+- 2026-04-15
+  - Made model variant dropdown defaults follow the detected GPU VRAM recommendation.
+  - Files changed:
+    - src-tauri/dist/main.js
+    - CHANGELOG_0.2.3.md
+    - version0.2.3_updates
+  - Notes:
+    - Variant lists are ranked by detected GPU VRAM and preserve catalog order inside the same recommendation rank.
+    - Checked models keep following the recommended variant unless the user manually changes that model's variant dropdown.
+    - `Select Visible` now selects the recommended variant for each visible model.

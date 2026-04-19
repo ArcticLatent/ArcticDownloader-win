@@ -190,8 +190,8 @@
 
         <div class="row model-row">
           <select id="model-family"></select>
-          <select id="vram-tier"></select>
-          <select id="ram-tier"></select>
+          <select id="vram-tier" class="hidden" aria-hidden="true"></select>
+          <select id="ram-tier" class="hidden" aria-hidden="true"></select>
           <input id="model-search" type="text" placeholder="Search models" />
           <button id="select-visible-models" type="button">Select Visible</button>
           <button id="refresh-catalog" type="button">Refresh Catalog</button>
@@ -275,7 +275,14 @@
         <div class="preview" id="workflow-preview-container">
           <img id="workflow-preview-image" class="hidden" alt="Workflow preview" />
           <p id="workflow-preview-caption">No workflow preview loaded.</p>
-          <p><strong>YouTube Tutorial:</strong> <a id="workflow-youtube-link" href="#">-</a></p>
+        </div>
+        <div class="lora-meta">
+          <div>
+            <strong>YouTube Tutorial:</strong>
+            <a id="workflow-youtube-link" href="#" target="_blank" rel="noopener noreferrer">
+              <span id="workflow-youtube-text">-</span>
+            </a>
+          </div>
         </div>
       </section>
 

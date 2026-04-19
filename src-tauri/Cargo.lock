@@ -123,7 +123,7 @@ checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
 
 [[package]]
 name = "arctic-downloader"
-version = "0.2.2"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "blake3",
@@ -151,7 +151,7 @@ dependencies = [
 
 [[package]]
 name = "arctic-downloader-tauri"
-version = "0.2.2"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "arctic-downloader",

@@ -298,7 +298,20 @@ pub struct WorkflowDefinition {
     pub id: String,
     pub display_name: String,
     pub family: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default)]
     pub workflow_json_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_link_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patreon_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview_image_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -362,6 +375,8 @@ pub struct ModelArtifact {
     #[serde(default)]
     pub license_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ram_bucket: Option<RamTier>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_ram_tier: Option<RamTier>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direct_url: Option<String>,
@@ -376,6 +391,9 @@ impl ModelArtifact {
     }
 
     pub fn is_supported_on_ram(&self, available: Option<RamTier>) -> bool {
+        if let Some(bucket) = self.ram_bucket {
+            return available.map(|tier| tier == bucket).unwrap_or(false);
+        }
         match self.min_ram_tier {
             None => true,
             Some(required) => available

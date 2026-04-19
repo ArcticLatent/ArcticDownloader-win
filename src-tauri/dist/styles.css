@@ -464,6 +464,28 @@ input[type="checkbox"] {
   padding: 6px 8px;
   word-break: break-word;
 }
+.queue-artifact-choice {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px;
+  align-items: start;
+  cursor: pointer;
+}
+.queue-artifact-choice input {
+  width: 15px;
+  height: 15px;
+  min-height: 0;
+  margin: 1px 0 0;
+  accent-color: var(--accent);
+}
+.queue-artifact-choice-text {
+  display: grid;
+  gap: 2px;
+}
+.queue-artifact-choice-meta {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
 .model-select-item {
   border: 1px solid #2c3345;
   border-radius: 10px;

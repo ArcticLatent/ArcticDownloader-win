@@ -43,10 +43,15 @@ const state = {
   comfyTorchProfileLocked: false,
   comfyAddonLoadSeq: 0,
   comfyDetectedGpuVendor: "",
+  detectedRamGb: null,
+  detectedRamTier: "",
+  detectedVramTier: "",
   comfyTorchRecommendedBase: "Recommended 'Torch 2.8.0 + cu128' for your GPU",
   sharedModelsRootDefault: "",
   sharedModelsUseDefault: false,
   selectedModelVariants: new Map(),
+  manuallySelectedModelVariants: new Set(),
+  selectedModelArtifactChoices: new Map(),
   comfyRuntimeLogs: [],
 };
 
@@ -56,17 +61,38 @@ const comfyUpdateStatusInflight = new Map();
 const COMFY_UPDATE_STATUS_CACHE_MS = 4000;
 
 const ramOptions = [
-  { id: "tier_a", label: "Tier A (64 GB+)" },
-  { id: "tier_b", label: "Tier B (32-63 GB)" },
-  { id: "tier_c", label: "Tier C (<32 GB)" },
+  { id: "ram_8", label: "8 GB RAM", gb: 8 },
+  { id: "ram_16", label: "16 GB RAM", gb: 16 },
+  { id: "ram_32", label: "32 GB RAM", gb: 32 },
+  { id: "ram_64", label: "64 GB RAM", gb: 64 },
+  { id: "ram_96", label: "96 GB RAM", gb: 96 },
+  { id: "ram_128", label: "128 GB RAM", gb: 128 },
 ];
 
 const vramOptions = [
-  { id: "tier_s", label: "Tier S (32 GB+)" },
-  { id: "tier_a", label: "Tier A (16-31 GB)" },
-  { id: "tier_b", label: "Tier B (12-15 GB)" },
-  { id: "tier_c", label: "Tier C (<12 GB)" },
+  { id: "vram_8", label: "8 GB VRAM", tier: "tier_c" },
+  { id: "vram_12", label: "12 GB VRAM", tier: "tier_b" },
+  { id: "vram_16", label: "16 GB VRAM", tier: "tier_a" },
+  { id: "vram_24", label: "24 GB VRAM", tier: "tier_a" },
+  { id: "vram_32", label: "32 GB VRAM", tier: "tier_s" },
+  { id: "vram_48", label: "48 GB VRAM", tier: "tier_s" },
+  { id: "vram_80", label: "80 GB VRAM", tier: "tier_s" },
+  { id: "vram_96", label: "96 GB VRAM", tier: "tier_s" },
 ];
+
+const vramTierLabels = {
+  tier_s: "32+ GB VRAM",
+  tier_a: "16/24 GB VRAM",
+  tier_b: "12 GB VRAM",
+  tier_c: "8 GB VRAM",
+};
+
+const tierStrength = {
+  tier_c: 0,
+  tier_b: 1,
+  tier_a: 2,
+  tier_s: 3,
+};
 
 const comfyTorchProfiles = [
   { value: "torch271_cu128", label: "Torch 2.7.1 + cu128" },
@@ -204,6 +230,7 @@ const el = {
   workflowPreviewImage: document.getElementById("workflow-preview-image"),
   workflowPreviewCaption: document.getElementById("workflow-preview-caption"),
   workflowYoutubeLink: document.getElementById("workflow-youtube-link"),
+  workflowYoutubeText: document.getElementById("workflow-youtube-text"),
   confirmOverlay: document.getElementById("confirm-overlay"),
   confirmMessage: document.getElementById("confirm-message"),
   confirmYes: document.getElementById("confirm-yes"),
@@ -1881,9 +1908,11 @@ function updateDownloadButtons() {
     el.downloadLora.textContent = "Cancel Download";
     el.downloadWorkflow.textContent = "Cancel Download";
   } else {
-    el.downloadModel.textContent = "Download Selected Model Assets";
+    el.downloadModel.textContent = "Download Model Assets";
     el.downloadLora.textContent = "Download LoRA";
-    el.downloadWorkflow.textContent = "Download Workflow";
+    el.downloadWorkflow.textContent = workflowExternalUrl(selectedWorkflow())
+      ? "Open Workflow Link"
+      : "Download Workflow";
   }
 }
 
@@ -2046,8 +2075,47 @@ function familyOptions(models) {
   const families = [...new Set(models.map((m) => m.family))].sort();
   return [
     { value: "", label: "MODELS", disabled: true },
-    ...families.map((f) => ({ value: f, label: f })),
+    ...families.map((f) => ({ value: f, label: modelFamilyLabel(f, models) })),
   ];
+}
+
+function prettyFamilyId(family) {
+  return String(family || "")
+    .trim()
+    .replace(/[_-]+/g, " ")
+    .replace(/\bflux\s*(\d+)\b/i, "FLUX $1")
+    .replace(/\bwan\b/i, "WAN")
+    .replace(/\bltx\s*(\d)(\d)\b/i, "LTX $1.$2")
+    .replace(/\s+/g, " ");
+}
+
+function commonDisplayPrefix(names) {
+  if (!names.length) return "";
+  let prefix = names[0];
+  for (const name of names.slice(1)) {
+    let i = 0;
+    while (i < prefix.length && i < name.length && prefix[i].toLowerCase() === name[i].toLowerCase()) {
+      i += 1;
+    }
+    prefix = prefix.slice(0, i);
+    if (!prefix) break;
+  }
+  return prefix
+    .replace(/[\s._/-]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function modelFamilyLabel(family, models = state.catalog?.models || []) {
+  const familyId = String(family || "").trim();
+  const names = (Array.isArray(models) ? models : [])
+    .filter((model) => String(model?.family || "").trim() === familyId)
+    .map((model) => String(model?.display_name || "").trim())
+    .filter(Boolean);
+  if (names.length === 1) return names[0];
+  const common = commonDisplayPrefix(names);
+  if (common.length >= 4) return common;
+  return prettyFamilyId(familyId) || familyId;
 }
 
 function loraFamilyOptions(loras) {
@@ -2063,22 +2131,91 @@ function workflowFamilyOptions(workflows) {
 function filteredModelsForCurrentSelection() {
   if (!state.catalog) return [];
   const family = String(el.modelFamily.value || "").trim();
-  if (!family) return [];
   const search = String(el.modelSearch?.value || "").trim().toLowerCase();
+  if (!family && !search) return [];
   return state.catalog.models.filter((model) => {
-    if (family !== model.family) return false;
-    if (!search) return true;
-    const haystack = `${model.display_name} ${model.family} ${model.id}`.toLowerCase();
+    if (family && model.family !== family) return false;
+    if (!search) return family ? model.family === family : false;
+    const variantText = (model.variants || [])
+      .map((variant) => [variant.id, variant.model_size, variant.quantization, variant.note].filter(Boolean).join(" "))
+      .join(" ");
+    const haystack = `${model.display_name} ${model.family} ${model.id} ${variantText}`.toLowerCase();
     return haystack.includes(search);
   });
 }
 
-function variantsForModelAndTier(model, tier) {
-  return (model?.variants || []).filter((variant) => variant.tier === tier);
+function modelHasAlwaysArtifacts(model) {
+  return Array.isArray(model?.always)
+    && model.always.some((group) => Array.isArray(group?.artifacts) && group.artifacts.length);
 }
 
-function modelVariantLabel(variant) {
-  return [variant.model_size, variant.quantization, variant.note, variant.tier?.toUpperCase?.()]
+function variantVramHint(variant, selectedTier = "") {
+  const variantTier = String(variant?.tier || "").trim();
+  const target = String(selectedTier || "").trim();
+  const label = vramTierLabels[variantTier] || variantTier.toUpperCase();
+  if (!target) return label;
+  if (variantTier === target) return `${label} detected fit`;
+  const variantStrength = tierStrength[variantTier];
+  const targetStrength = tierStrength[target];
+  if (!Number.isFinite(variantStrength) || !Number.isFinite(targetStrength)) return label;
+  return variantStrength > targetStrength
+    ? `${label} may need more VRAM`
+    : label;
+}
+
+function variantSortRank(variant, selectedTier = "") {
+  const variantTier = String(variant?.tier || "").trim();
+  const target = String(selectedTier || "").trim();
+  if (!target) return 0;
+  const variantStrength = tierStrength[variantTier];
+  const targetStrength = tierStrength[target];
+  if (!Number.isFinite(variantStrength) || !Number.isFinite(targetStrength)) return 50;
+  if (variantTier === target) return 0;
+  if (variantStrength < targetStrength) return 10 + (targetStrength - variantStrength);
+  return 20 + (variantStrength - targetStrength);
+}
+
+function variantsForModel(model, selectedTier = "") {
+  const variants = [...(model?.variants || [])];
+  if (!selectedTier) return variants;
+  return variants
+    .map((variant, index) => ({ variant, index }))
+    .sort((a, b) => {
+      const rankDelta = variantSortRank(a.variant, selectedTier) - variantSortRank(b.variant, selectedTier);
+      if (rankDelta) return rankDelta;
+      return a.index - b.index;
+    })
+    .map((entry) => entry.variant);
+}
+
+function recommendedVariantIdForModel(model, selectedTier = selectedVramTierValue()) {
+  return variantsForModel(model, selectedTier)[0]?.id || "";
+}
+
+function clearModelArtifactChoiceState(modelId, variantId = "") {
+  const prefix = variantId ? `${modelId}::${variantId}::` : `${modelId}::`;
+  for (const key of Array.from(state.selectedModelArtifactChoices.keys())) {
+    if (key.startsWith(prefix)) {
+      state.selectedModelArtifactChoices.delete(key);
+    }
+  }
+}
+
+function setSelectedModelVariant(modelId, variantId, manuallySelected = false) {
+  if (variantId) {
+    state.selectedModelVariants.set(modelId, variantId);
+  } else {
+    state.selectedModelVariants.delete(modelId);
+  }
+  if (manuallySelected) {
+    state.manuallySelectedModelVariants.add(modelId);
+  } else {
+    state.manuallySelectedModelVariants.delete(modelId);
+  }
+}
+
+function modelVariantLabel(variant, selectedTier = "") {
+  return [variant.model_size, variant.quantization, variant.note, variantVramHint(variant, selectedTier)]
     .filter(Boolean)
     .join(DOT_SEP);
 }
@@ -2099,6 +2236,71 @@ function resolvedModelRamThresholds(model) {
     tier_b: Number.isFinite(Number(cfg.tier_b_min_gb)) ? Number(cfg.tier_b_min_gb) : 32,
     tier_c: Number.isFinite(Number(cfg.tier_c_min_gb)) ? Number(cfg.tier_c_min_gb) : 0,
   };
+}
+
+function ramTierForGb(gb, thresholds = null) {
+  const value = Number(gb);
+  if (!Number.isFinite(value)) return "";
+  const mins = thresholds || { tier_a: 64, tier_b: 32, tier_c: 0 };
+  if (value >= Number(mins.tier_a || 64)) return "tier_a";
+  if (value >= Number(mins.tier_b || 32)) return "tier_b";
+  return "tier_c";
+}
+
+function vramTierForGb(gb) {
+  const value = Number(gb);
+  if (!Number.isFinite(value) || value <= 0) return "";
+  if (value >= 31.9) return "tier_s";
+  if (value >= 15.9) return "tier_a";
+  if (value >= 11.5) return "tier_b";
+  return "tier_c";
+}
+
+function vramTierForMb(mb) {
+  const value = Number(mb);
+  if (!Number.isFinite(value) || value <= 0) return "";
+  if (value >= 32000) return "tier_s";
+  if (value >= 16000) return "tier_a";
+  if (value >= 12000) return "tier_b";
+  return "tier_c";
+}
+
+function normalizeRamTier(value) {
+  const normalized = String(value || "").trim().toLowerCase().replace(/\s+/g, "_");
+  if (normalized === "tier_a" || normalized === "a") return "tier_a";
+  if (normalized === "tier_b" || normalized === "b") return "tier_b";
+  if (normalized === "tier_c" || normalized === "c") return "tier_c";
+  return "";
+}
+
+function selectedRamTierValue() {
+  const selected = String(el.ramTier?.value || "").trim();
+  if (!selected) {
+    return Number.isFinite(state.detectedRamGb)
+      ? ramTierForGb(state.detectedRamGb, ramThresholdsForDropdownContext())
+      : state.detectedRamTier || "";
+  }
+  if (selected === "tier_a" || selected === "tier_b" || selected === "tier_c") return selected;
+  const option = ramOptions.find((item) => item.id === selected);
+  return option ? ramTierForGb(option.gb, ramThresholdsForDropdownContext()) : "";
+}
+
+function selectedVramTierValue() {
+  const selected = String(el.vramTier?.value || "").trim();
+  if (!selected) return state.detectedVramTier || "";
+  if (selected === "tier_s" || selected === "tier_a" || selected === "tier_b" || selected === "tier_c") return selected;
+  return vramOptions.find((item) => item.id === selected)?.tier || "";
+}
+
+function customRamOptionLabel(tierId, thresholds) {
+  const mins = thresholds || { tier_a: 64, tier_b: 32, tier_c: 0 };
+  if (tierId === "tier_a") {
+    return `Tier A (${formatRamGb(mins.tier_a)} GB+)`;
+  }
+  if (tierId === "tier_b") {
+    return `Tier B (${formatRamGb(mins.tier_b)}-${formatRamGb(mins.tier_a)} GB)`;
+  }
+  return `Tier C (<${formatRamGb(mins.tier_b)} GB)`;
 }
 
 function hasCustomRamThresholds(model) {
@@ -2128,17 +2330,6 @@ function sharedCustomRamThresholds(models) {
     : null;
 }
 
-function customRamOptionLabel(tierId, thresholds) {
-  const mins = thresholds || { tier_a: 64, tier_b: 32, tier_c: 0 };
-  if (tierId === "tier_a") {
-    return `Tier A (${formatRamGb(mins.tier_a)} GB+)`;
-  }
-  if (tierId === "tier_b") {
-    return `Tier B (${formatRamGb(mins.tier_b)}-${formatRamGb(mins.tier_a)} GB)`;
-  }
-  return `Tier C (<${formatRamGb(mins.tier_b)} GB)`;
-}
-
 function ramThresholdsForDropdownContext() {
   const selectedModels = selectedModelItems().map((item) => item.model).filter(Boolean);
   const selectedShared = sharedCustomRamThresholds(selectedModels);
@@ -2152,13 +2343,12 @@ function ramThresholdsForDropdownContext() {
 
 function updateRamTierOptions() {
   if (!el.ramTier) return;
-  const current = String(el.ramTier.value || "").trim();
-  const thresholds = ramThresholdsForDropdownContext();
+  const current = el.ramTier.value || "";
   const options = [
     { value: "", label: "RAM", disabled: true },
     ...ramOptions.map((item) => ({
       value: item.id,
-      label: thresholds ? customRamOptionLabel(item.id, thresholds) : item.label,
+      label: item.label,
     })),
   ];
   setOptions(el.ramTier, options, current);
@@ -2175,9 +2365,23 @@ function vramOptionsWithPlaceholder() {
 }
 
 function artifactSupportedOnRam(artifact, availableTier) {
+  const bucketTier = String(artifact?.ram_bucket || "").trim();
+  if (bucketTier) {
+    return String(availableTier || "").trim() === bucketTier;
+  }
   const requiredTier = String(artifact?.min_ram_tier || "").trim();
   if (!requiredTier) return true;
-  return String(availableTier || "").trim() === requiredTier;
+  const currentTier = String(availableTier || "").trim();
+  if (!currentTier) return false;
+  const currentStrength = tierStrength[currentTier];
+  const requiredStrength = tierStrength[requiredTier];
+  if (!Number.isFinite(currentStrength) || !Number.isFinite(requiredStrength)) return false;
+  return currentStrength >= requiredStrength;
+}
+
+function artifactSelectableInQueue(artifact, availableTier) {
+  if (String(artifact?.ram_bucket || "").trim()) return true;
+  return artifactSupportedOnRam(artifact, availableTier);
 }
 
 function artifactFileName(artifact) {
@@ -2189,6 +2393,43 @@ function artifactFileName(artifact) {
   return noQuery.split("/").filter(Boolean).pop() || direct;
 }
 
+function artifactChoiceKey(artifact) {
+  return [
+    String(artifact?.target_category || "").trim(),
+    String(artifact?.repo || "").trim(),
+    String(artifact?.path || "").trim(),
+    String(artifact?.direct_url || "").trim(),
+    artifactFileName(artifact),
+  ].join("::");
+}
+
+function artifactChoiceStateKey(item, artifact) {
+  return [item.modelId, item.variantId, artifactChoiceKey(artifact)].join("::");
+}
+
+function artifactDefaultChecked(artifact, ramTier) {
+  const bucketTier = String(artifact?.ram_bucket || "").trim();
+  if (bucketTier) {
+    const currentTier = String(ramTier || "").trim();
+    return currentTier ? bucketTier === currentTier : true;
+  }
+  return artifactSupportedOnRam(artifact, ramTier);
+}
+
+function artifactChoiceChecked(item, artifact, ramTier) {
+  const key = artifactChoiceStateKey(item, artifact);
+  if (state.selectedModelArtifactChoices.has(key)) {
+    return state.selectedModelArtifactChoices.get(key);
+  }
+  return artifactDefaultChecked(artifact, ramTier);
+}
+
+function ramBucketLabel(tierId) {
+  const thresholds = ramThresholdsForDropdownContext();
+  if (!tierId) return "";
+  return customRamOptionLabel(tierId, thresholds);
+}
+
 function queueArtifactGroupLabel(group) {
   const label = String(group?.label || "").trim();
   if (label) return label;
@@ -2197,34 +2438,37 @@ function queueArtifactGroupLabel(group) {
   return id.replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+function queueArtifactGroupRank(group) {
+  const id = String(group?.id || "").trim().toLowerCase();
+  const label = String(group?.label || "").trim().toLowerCase();
+  const categories = (Array.isArray(group?.artifacts) ? group.artifacts : [])
+    .map((artifact) => String(artifact?.target_category || "").trim().toLowerCase());
+  const haystack = [id, label, ...categories].join(" ");
+  if (/\b(text[_\s-]*encoders?|clip)\b/.test(haystack)) return 0;
+  return 1;
+}
+
 function alwaysArtifactGroupsForModel(model, ramTier) {
   const groups = Array.isArray(model?.always) ? model.always : [];
   return groups
-    .map((group) => {
+    .map((group, index) => {
       const seen = new Set();
       const artifacts = (Array.isArray(group?.artifacts) ? group.artifacts : []).filter((artifact) => {
-        if (!artifactSupportedOnRam(artifact, ramTier)) return false;
-        const key = [
-          String(artifact?.target_category || "").trim(),
-          String(artifact?.repo || "").trim(),
-          String(artifact?.path || "").trim(),
-          String(artifact?.direct_url || "").trim(),
-          artifactFileName(artifact),
-        ].join("::");
+        if (!artifactSelectableInQueue(artifact, ramTier)) return false;
+        const key = artifactChoiceKey(artifact);
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
       });
       return {
+        index,
+        rank: queueArtifactGroupRank(group),
         label: queueArtifactGroupLabel(group),
         artifacts,
       };
     })
-    .filter((group) => group.artifacts.length > 0);
-}
-
-function modelHasAlwaysArtifacts(model) {
-  return alwaysArtifactGroupsForModel(model, el.ramTier?.value || "").length > 0;
+    .filter((group) => group.artifacts.length > 0)
+    .sort((a, b) => (a.rank - b.rank) || (a.index - b.index));
 }
 
 function selectedVariantArtifactsForDisplay(variant, ramTier) {
@@ -2232,17 +2476,27 @@ function selectedVariantArtifactsForDisplay(variant, ramTier) {
   const seen = new Set();
   return artifacts.filter((artifact) => {
     if (!artifactSupportedOnRam(artifact, ramTier)) return false;
-    const key = [
-      String(artifact?.target_category || "").trim(),
-      String(artifact?.repo || "").trim(),
-      String(artifact?.path || "").trim(),
-      String(artifact?.direct_url || "").trim(),
-      artifactFileName(artifact),
-    ].join("::");
+    const key = artifactChoiceKey(artifact);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
+}
+
+function selectedArtifactKeysForDownload(item) {
+  const ramTier = selectedRamTierValue();
+  const keys = new Set();
+  selectedVariantArtifactsForDisplay(item.variant, ramTier).forEach((artifact) => {
+    keys.add(artifactChoiceKey(artifact));
+  });
+  alwaysArtifactGroupsForModel(item.model, ramTier).forEach((group) => {
+    group.artifacts.forEach((artifact) => {
+      if (artifactChoiceChecked(item, artifact, ramTier)) {
+        keys.add(artifactChoiceKey(artifact));
+      }
+    });
+  });
+  return Array.from(keys);
 }
 
 function selectedModelItems() {
@@ -2285,6 +2539,7 @@ function updateModelSelectionSummary() {
 function renderSelectedModelQueue() {
   if (!el.selectedModelQueue) return;
   const items = selectedModelItems();
+  const ramTier = selectedRamTierValue();
   el.selectedModelQueue.innerHTML = "";
   if (!items.length) {
     const empty = document.createElement("div");
@@ -2299,19 +2554,22 @@ function renderSelectedModelQueue() {
     .forEach((item) => {
       const row = document.createElement("div");
       row.className = "queue-item";
-      const selectedArtifacts = selectedVariantArtifactsForDisplay(item.variant, el.ramTier?.value || "");
+      const selectedArtifacts = selectedVariantArtifactsForDisplay(item.variant, ramTier);
       const head = document.createElement("div");
       head.className = "queue-item-head";
       const title = document.createElement("div");
       title.className = "queue-item-title";
-      title.textContent = selectedArtifacts.length <= 1
-        ? (artifactFileName(selectedArtifacts[0]) || (item.alwaysOnly ? `${item.model.display_name}${DOT_SEP}Always Artifacts Only` : item.label))
-        : `${selectedArtifacts.length} selected variant files`;
+      title.textContent = selectedArtifacts.length === 1
+        ? artifactFileName(selectedArtifacts[0])
+        : selectedArtifacts.length > 1
+          ? `${selectedArtifacts.length} selected variant files`
+          : (item.alwaysOnly ? `${item.model.display_name}${DOT_SEP}Always Artifacts Only` : item.label);
       const remove = document.createElement("button");
       remove.type = "button";
       remove.textContent = "Remove";
       remove.addEventListener("click", () => {
-        state.selectedModelVariants.delete(item.modelId);
+        setSelectedModelVariant(item.modelId, "");
+        clearModelArtifactChoiceState(item.modelId, item.variantId);
         renderModelSelectionList();
       });
       head.appendChild(title);
@@ -2339,7 +2597,7 @@ function renderSelectedModelQueue() {
         row.appendChild(selectedSection);
       }
 
-      const alwaysGroups = alwaysArtifactGroupsForModel(item.model, el.ramTier?.value || "");
+      const alwaysGroups = alwaysArtifactGroupsForModel(item.model, ramTier);
       if (alwaysGroups.length) {
         const section = document.createElement("div");
         section.className = "queue-item-artifacts";
@@ -2361,10 +2619,36 @@ function renderSelectedModelQueue() {
           const list = document.createElement("div");
           list.className = "queue-artifact-list";
           group.artifacts.forEach((artifact) => {
-            const entry = document.createElement("div");
-            entry.className = "queue-artifact-item";
-            entry.textContent = artifactFileName(artifact);
-            list.appendChild(entry);
+            const label = document.createElement("label");
+            label.className = "queue-artifact-item queue-artifact-choice";
+
+            const checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            checkbox.checked = artifactChoiceChecked(item, artifact, ramTier);
+            checkbox.addEventListener("change", () => {
+              state.selectedModelArtifactChoices.set(
+                artifactChoiceStateKey(item, artifact),
+                checkbox.checked,
+              );
+            });
+
+            const text = document.createElement("span");
+            text.className = "queue-artifact-choice-text";
+            const name = document.createElement("span");
+            name.textContent = artifactFileName(artifact);
+            text.appendChild(name);
+
+            const bucket = String(artifact?.ram_bucket || "").trim();
+            if (bucket) {
+              const meta = document.createElement("span");
+              meta.className = "queue-artifact-choice-meta";
+              meta.textContent = ramBucketLabel(bucket);
+              text.appendChild(meta);
+            }
+
+            label.appendChild(checkbox);
+            label.appendChild(text);
+            list.appendChild(label);
           });
           groupWrap.appendChild(list);
           section.appendChild(groupWrap);
@@ -2380,13 +2664,13 @@ function renderSelectedModelQueue() {
 function renderModelSelectionList() {
   if (!el.modelSelectionList) return;
   const models = filteredModelsForCurrentSelection();
-  const tier = String(el.vramTier?.value || "").trim();
+  const tier = selectedVramTierValue();
   el.modelSelectionList.innerHTML = "";
 
-  if (!tier) {
+  if (!String(el.modelFamily.value || "").trim() && !String(el.modelSearch?.value || "").trim()) {
     const empty = document.createElement("div");
     empty.className = "empty-msg";
-    empty.textContent = "Choose your model family, GPU VRAM, and RAM first.";
+    empty.textContent = "Choose a model family or search all models.";
     el.modelSelectionList.appendChild(empty);
     updateModelSelectionSummary();
     renderSelectedModelQueue();
@@ -2404,20 +2688,25 @@ function renderModelSelectionList() {
   }
 
   models.forEach((model) => {
-    const variants = variantsForModelAndTier(model, tier);
+    const variants = variantsForModel(model, tier);
     const selectedVariantId = state.selectedModelVariants.get(model.id);
     const supportsAlwaysOnly = !variants.length && modelHasAlwaysArtifacts(model);
-    const fallbackVariantId = variants[0]?.id || (supportsAlwaysOnly ? ALWAYS_ONLY_VARIANT_ID : "");
-    const currentVariantId = variants.some((variant) => variant.id === selectedVariantId)
+    const recommendedVariantId = recommendedVariantIdForModel(model, tier);
+    const fallbackVariantId = recommendedVariantId || (supportsAlwaysOnly ? ALWAYS_ONLY_VARIANT_ID : "");
+    const selectedVariantIsValid = variants.some((variant) => variant.id === selectedVariantId);
+    const currentVariantId = state.manuallySelectedModelVariants.has(model.id) && selectedVariantIsValid
       ? selectedVariantId
       : (supportsAlwaysOnly && selectedVariantId === ALWAYS_ONLY_VARIANT_ID)
         ? ALWAYS_ONLY_VARIANT_ID
-        : fallbackVariantId;
+      : fallbackVariantId;
+    const keepManualSelection = state.manuallySelectedModelVariants.has(model.id)
+      && selectedVariantIsValid
+      && currentVariantId === selectedVariantId;
 
     if (state.selectedModelVariants.has(model.id) && currentVariantId) {
-      state.selectedModelVariants.set(model.id, currentVariantId);
+      setSelectedModelVariant(model.id, currentVariantId, keepManualSelection);
     } else if (!currentVariantId) {
-      state.selectedModelVariants.delete(model.id);
+      setSelectedModelVariant(model.id, "");
     }
 
     const row = document.createElement("div");
@@ -2430,11 +2719,11 @@ function renderModelSelectionList() {
     box.checked = Boolean(currentVariantId && state.selectedModelVariants.has(model.id));
     box.disabled = !currentVariantId;
     box.addEventListener("change", () => {
-      const activeVariantId = String(variantSelect.value || "").trim();
+      const activeVariantId = String(variantSelect.value || "").trim() || currentVariantId;
       if (box.checked && activeVariantId) {
-        state.selectedModelVariants.set(model.id, activeVariantId);
+        setSelectedModelVariant(model.id, activeVariantId, state.manuallySelectedModelVariants.has(model.id));
       } else {
-        state.selectedModelVariants.delete(model.id);
+        setSelectedModelVariant(model.id, "");
       }
       updateModelSelectionSummary();
       renderSelectedModelQueue();
@@ -2447,24 +2736,27 @@ function renderModelSelectionList() {
     title.textContent = model.display_name;
     const meta = document.createElement("div");
     meta.className = "model-select-meta";
+    const familyLabel = modelFamilyLabel(model.family);
     meta.textContent = supportsAlwaysOnly
-      ? `${model.family}${DOT_SEP}Always artifacts only`
-      : `${model.family}${variants.length ? `${DOT_SEP}${variants.length} variant${variants.length === 1 ? "" : "s"} for ${String(tier || "").toUpperCase()}` : `${DOT_SEP}No variant for ${String(tier || "").toUpperCase()}`}`;
+      ? `${familyLabel}${DOT_SEP}Always artifacts only`
+      : `${familyLabel}${variants.length ? `${DOT_SEP}${variants.length} manual variant${variants.length === 1 ? "" : "s"}${tier ? `${DOT_SEP}Detected GPU: ${vramTierLabels[tier] || tier.toUpperCase()}` : ""}` : `${DOT_SEP}No variants`}`;
     labelWrap.appendChild(title);
     labelWrap.appendChild(meta);
 
     const variantSelect = document.createElement("select");
     const variantOptions = variants.length
-      ? variants.map((variant) => ({ value: variant.id, label: modelVariantLabel(variant) }))
-      : (supportsAlwaysOnly
+      ? variants.map((variant) => ({ value: variant.id, label: modelVariantLabel(variant, tier) }))
+      : supportsAlwaysOnly
         ? [{ value: ALWAYS_ONLY_VARIANT_ID, label: "Always Artifacts Only" }]
-        : [{ value: "", label: "No variant for selected VRAM tier", disabled: true }]);
+      : [{ value: "", label: "No variants available", disabled: true }];
     setOptions(variantSelect, variantOptions, currentVariantId);
-    variantSelect.disabled = !variants.length;
+    variantSelect.disabled = !variants.length && !supportsAlwaysOnly;
     variantSelect.addEventListener("change", () => {
       const nextVariantId = String(variantSelect.value || "").trim();
       if (box.checked && nextVariantId) {
-        state.selectedModelVariants.set(model.id, nextVariantId);
+        setSelectedModelVariant(model.id, nextVariantId, true);
+      } else if (nextVariantId) {
+        state.manuallySelectedModelVariants.add(model.id);
       }
       updateModelSelectionSummary();
       renderSelectedModelQueue();
@@ -2512,14 +2804,52 @@ function refreshWorkflowSelectors() {
   if (!state.catalog) return;
   const family = el.workflowFamily.value || "all";
   const filtered = (state.catalog.workflows || []).filter((w) => family === "all" || w.family === family);
-  const options = filtered.map((w) => ({ value: w.id, label: w.display_name }));
+  const options = filtered.map((w) => ({ value: w.id, label: workflowDisplayName(w) }));
   setOptions(el.workflowId, options);
   loadWorkflowPreview();
 }
 
-function loadWorkflowPreview() {
+function workflowDisplayName(workflow) {
+  if (!workflow) return "Workflow";
+  return (
+    String(workflow.workflow_name || "").trim() ||
+    String(workflow.name || "").trim() ||
+    String(workflow.title || "").trim() ||
+    String(workflow.display_name || "").trim() ||
+    String(workflow.id || "").trim() ||
+    "Workflow"
+  );
+}
+
+function selectedWorkflow() {
   const selectedId = String(el.workflowId?.value || "").trim();
-  const workflow = (state.catalog?.workflows || []).find((w) => w.id === selectedId);
+  if (!selectedId) return null;
+  return (state.catalog?.workflows || []).find((w) => w.id === selectedId) || null;
+}
+
+function workflowExternalUrl(workflow) {
+  if (!workflow) return "";
+  const directLink =
+    String(workflow.patreon_url || "").trim() ||
+    String(workflow.workflow_url || "").trim() ||
+    String(workflow.workflow_link_url || "").trim();
+  if (directLink) return directLink;
+
+  const legacyUrl = String(workflow.workflow_json_url || "").trim();
+  if (!legacyUrl) return "";
+  try {
+    const parsed = new URL(legacyUrl);
+    const path = parsed.pathname.toLowerCase();
+    const host = parsed.hostname.toLowerCase();
+    if (host.includes("patreon.com") || !path.endsWith(".json")) {
+      return legacyUrl;
+    }
+  } catch (_) {}
+  return "";
+}
+
+function loadWorkflowPreview() {
+  const workflow = selectedWorkflow();
   if (!workflow) {
     if (el.workflowPreviewImage) {
       el.workflowPreviewImage.classList.add("hidden");
@@ -2528,11 +2858,14 @@ function loadWorkflowPreview() {
     if (el.workflowPreviewCaption) {
       el.workflowPreviewCaption.textContent = "No workflow preview loaded.";
     }
+    if (el.workflowYoutubeText) {
+      el.workflowYoutubeText.textContent = "-";
+    }
     if (el.workflowYoutubeLink) {
-      el.workflowYoutubeLink.textContent = "-";
-      el.workflowYoutubeLink.setAttribute("href", "#");
+      el.workflowYoutubeLink.href = "#";
       el.workflowYoutubeLink.style.pointerEvents = "none";
     }
+    updateDownloadButtons();
     return;
   }
 
@@ -2545,6 +2878,7 @@ function loadWorkflowPreview() {
     if (el.workflowPreviewCaption) {
       el.workflowPreviewCaption.textContent = "No preview image available for this workflow.";
     }
+    updateDownloadButtons();
     return;
   }
 
@@ -2553,20 +2887,18 @@ function loadWorkflowPreview() {
     el.workflowPreviewImage.classList.remove("hidden");
   }
   if (el.workflowPreviewCaption) {
-    el.workflowPreviewCaption.textContent = workflow.display_name || "Workflow preview";
+    el.workflowPreviewCaption.textContent = workflowDisplayName(workflow);
+  }
+
+  const ytUrl = String(workflow.youtube_url || "").trim();
+  if (el.workflowYoutubeText) {
+    el.workflowYoutubeText.textContent = ytUrl ? "Link" : "-";
   }
   if (el.workflowYoutubeLink) {
-    const youtubeUrl = String(workflow.youtube_url || "").trim();
-    if (youtubeUrl) {
-      el.workflowYoutubeLink.textContent = "Link";
-      el.workflowYoutubeLink.setAttribute("href", youtubeUrl);
-      el.workflowYoutubeLink.style.pointerEvents = "auto";
-    } else {
-      el.workflowYoutubeLink.textContent = "-";
-      el.workflowYoutubeLink.setAttribute("href", "#");
-      el.workflowYoutubeLink.style.pointerEvents = "none";
-    }
+    el.workflowYoutubeLink.href = ytUrl || "#";
+    el.workflowYoutubeLink.style.pointerEvents = ytUrl ? "auto" : "none";
   }
+  updateDownloadButtons();
 }
 
 async function loadLoraMetadata() {
@@ -2645,6 +2977,9 @@ async function bootstrap() {
       .then((snapshot) => {
         const ramRaw = Number(snapshot.total_ram_gb);
         const ramGb = Number.isFinite(ramRaw) ? (ramRaw > 1000 ? ramRaw / 1000 : ramRaw) : null;
+        state.detectedRamGb = ramGb;
+        state.detectedRamTier = normalizeRamTier(snapshot.ram_tier);
+        state.detectedVramTier = vramTierForMb(snapshot.nvidia_gpu_vram_mb);
         const ramText = `${ramGb != null ? ramGb.toFixed(1) : "?"} GB RAM`;
         const amdGpu = String(snapshot.amd_gpu_name || "").trim();
         const nvidiaGpu = String(snapshot.nvidia_gpu_name || "").trim();
@@ -2887,22 +3222,21 @@ el.vramTier.addEventListener("change", renderModelSelectionList);
 el.ramTier.addEventListener("change", renderModelSelectionList);
 el.modelSearch?.addEventListener("input", renderModelSelectionList);
 el.selectVisibleModels?.addEventListener("click", () => {
-  if (!String(el.vramTier?.value || "").trim()) {
-    logLine("Choose GPU VRAM first.");
-    return;
-  }
+  const vramTier = selectedVramTierValue();
   filteredModelsForCurrentSelection().forEach((model) => {
-    const variants = variantsForModelAndTier(model, el.vramTier.value);
-    if (variants[0]?.id) {
-      state.selectedModelVariants.set(model.id, state.selectedModelVariants.get(model.id) || variants[0].id);
+    const recommendedVariantId = recommendedVariantIdForModel(model, vramTier);
+    if (recommendedVariantId) {
+      setSelectedModelVariant(model.id, recommendedVariantId);
     } else if (modelHasAlwaysArtifacts(model)) {
-      state.selectedModelVariants.set(model.id, state.selectedModelVariants.get(model.id) || ALWAYS_ONLY_VARIANT_ID);
+      setSelectedModelVariant(model.id, ALWAYS_ONLY_VARIANT_ID);
     }
   });
   renderModelSelectionList();
 });
 el.clearModelSelection?.addEventListener("click", () => {
   state.selectedModelVariants.clear();
+  state.manuallySelectedModelVariants.clear();
+  state.selectedModelArtifactChoices.clear();
   renderModelSelectionList();
 });
 el.refreshCatalog?.addEventListener("click", async () => {
@@ -2952,7 +3286,7 @@ el.saveRoot.addEventListener("click", async () => {
 
 el.chooseRoot.addEventListener("click", async () => {
   try {
-    const selected = await invoke("pick_folder");
+    const selected = await invoke("pick_folder", { title: "Choose ComfyUI folder" });
     if (!selected) return;
     el.comfyRoot.value = selected;
     await invoke("set_comfyui_root", { comfyuiRoot: selected });
@@ -2994,7 +3328,7 @@ el.saveRootLora.addEventListener("click", async () => {
 
 el.chooseRootLora.addEventListener("click", async () => {
   try {
-    const selected = await invoke("pick_folder");
+    const selected = await invoke("pick_folder", { title: "Choose ComfyUI folder" });
     if (!selected) return;
     el.comfyRootLora.value = selected;
     await invoke("set_comfyui_root", { comfyuiRoot: selected });
@@ -3029,7 +3363,7 @@ el.saveRootWorkflow?.addEventListener("click", async () => {
 
 el.chooseRootWorkflow?.addEventListener("click", async () => {
   try {
-    const selected = await invoke("pick_folder");
+    const selected = await invoke("pick_folder", { title: "Choose ComfyUI folder" });
     if (!selected) return;
     el.comfyRootWorkflow.value = selected;
     await invoke("set_comfyui_root", { comfyuiRoot: selected });
@@ -3060,7 +3394,7 @@ el.saveInstallRoot.addEventListener("click", async () => {
 
 el.chooseInstallRoot.addEventListener("click", async () => {
   try {
-    const selected = await invoke("pick_folder");
+    const selected = await invoke("pick_folder", { title: "Choose ComfyUI base folder" });
     if (!selected) return;
     await syncComfyInstallSelection(selected, true);
     logComfyLine("ComfyUI install folder selected.");
@@ -3072,7 +3406,7 @@ el.chooseInstallRoot.addEventListener("click", async () => {
 
 el.chooseExtraModelRoot?.addEventListener("click", async () => {
   try {
-    const selected = await invoke("pick_folder");
+    const selected = await invoke("pick_folder", { title: "Choose shared models folder" });
     if (!selected) return;
     if (el.comfyExtraModelRoot) {
       el.comfyExtraModelRoot.value = selected;
@@ -3782,39 +4116,82 @@ el.downloadModel.addEventListener("click", async () => {
   const items = selectedModelItems().map((item) => ({
     modelId: item.modelId,
     variantId: item.variantId,
+    selectedArtifactKeys: selectedArtifactKeysForDownload(item),
   }));
   if (!items.length) {
     logLine("Select at least one model first.");
     return;
   }
-  if (!String(el.ramTier?.value || "").trim()) {
-    logLine("Choose RAM first.");
-    return;
-  }
+  const ramTier = selectedRamTierValue();
+  const vramTier = selectedVramTierValue();
   beginBusyDownload("Starting model download...");
   try {
     if (items.length === 1) {
       await invoke("download_model_assets", {
         modelId: items[0].modelId,
         variantId: items[0].variantId,
-        ramTier: el.ramTier.value,
-        vramTier: el.vramTier.value,
+        ramTier,
+        vramTier,
+        selectedArtifactKeys: items[0].selectedArtifactKeys,
         comfyuiRoot: el.comfyRoot.value,
       });
     } else {
       await invoke("download_model_assets_batch", {
         request: {
           items,
-          ramTier: el.ramTier.value,
-          vramTier: el.vramTier.value,
+          ramTier,
+          vramTier,
           comfyuiRoot: el.comfyRoot.value,
         },
       });
     }
-    logLine(items.length === 1 ? "Model download started." : `Started ${items.length} model downloads.`);
+    logLine("Model download started.");
   } catch (err) {
     logLine(String(err));
     endBusyDownload();
+  }
+});
+
+el.saveComfyCustomLaunchArgs?.addEventListener("click", async () => {
+  const raw = String(el.comfyCustomLaunchArgs?.value || "");
+  try {
+    state.settings = await invoke("set_comfyui_custom_launch_args", {
+      customLaunchArgs: raw,
+    });
+    el.comfyCustomLaunchArgs.value = state.settings?.comfyui_custom_launch_args || raw.trim();
+    logComfyLine("Custom launch args saved.");
+  } catch (err) {
+    logComfyLine(`Saving custom launch args failed: ${err}`);
+  }
+});
+
+el.clearComfyCustomLaunchArgs?.addEventListener("click", async () => {
+  try {
+    state.settings = await invoke("set_comfyui_custom_launch_args", {
+      customLaunchArgs: "",
+    });
+    if (el.comfyCustomLaunchArgs) {
+      el.comfyCustomLaunchArgs.value = "";
+    }
+    logComfyLine("Custom launch args cleared.");
+  } catch (err) {
+    logComfyLine(`Clearing custom launch args failed: ${err}`);
+  }
+});
+
+el.comfyShowRuntimeLogs?.addEventListener("change", async () => {
+  const enabled = !!el.comfyShowRuntimeLogs.checked;
+  try {
+    state.settings = await invoke("set_comfyui_show_runtime_logs", { enabled });
+    el.comfyShowRuntimeLogs.checked = state.settings?.comfyui_show_runtime_logs !== false;
+    logComfyLine(
+      enabled
+        ? "Runtime logs will appear in the app on next launch."
+        : "Runtime logs in the app are disabled for next launch.",
+    );
+  } catch (err) {
+    el.comfyShowRuntimeLogs.checked = !enabled;
+    logComfyLine(`Runtime log toggle failed: ${err}`);
   }
 });
 
@@ -3871,14 +4248,25 @@ el.downloadWorkflow?.addEventListener("click", async () => {
     await requestCancelDownload();
     return;
   }
-  if (!el.workflowId.value) {
+  const workflow = selectedWorkflow();
+  if (!workflow) {
     logLine("Select a workflow first.");
+    return;
+  }
+  const externalUrl = workflowExternalUrl(workflow);
+  if (externalUrl) {
+    try {
+      await invoke("open_external_url", { url: externalUrl });
+      logLine("Opened workflow link in browser.");
+    } catch (err) {
+      logLine(`Open workflow link failed: ${err}`);
+    }
     return;
   }
   beginBusyDownload("Starting workflow download...");
   try {
     await invoke("download_workflow_asset", {
-      workflowId: el.workflowId.value,
+      workflowId: workflow.id,
       comfyuiRoot: el.comfyRootWorkflow?.value || el.comfyRoot.value,
     });
     logLine("Workflow download started.");

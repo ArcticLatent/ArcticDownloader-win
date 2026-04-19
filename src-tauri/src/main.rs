@@ -5,12 +5,13 @@ use arctic_downloader::{
     config::AppSettings,
     download::{CivitaiPreview, DownloadSignal, DownloadStatus},
     env_flags::auto_update_enabled,
-    model::{LoraDefinition, ModelCatalog, WorkflowDefinition},
+    model::{LoraDefinition, ModelArtifact, ModelCatalog, ResolvedModel, WorkflowDefinition},
     ram::{detect_ram_profile, RamTier},
     vram::VramTier,
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     io::{Read, Write},
     net::{TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
@@ -77,6 +78,8 @@ struct HfXetPreflightResponse {
 struct BatchModelDownloadItem {
     model_id: String,
     variant_id: String,
+    #[serde(default)]
+    selected_artifact_keys: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1658,6 +1661,61 @@ fn run_command(program: &str, args: &[&str], working_dir: Option<&Path>) -> Resu
         ));
     }
     Ok(())
+}
+
+fn model_artifact_selection_key(artifact: &ModelArtifact) -> String {
+    [
+        artifact.target_category.slug(),
+        artifact.repo.trim(),
+        artifact.path.trim(),
+        artifact
+            .direct_url
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default(),
+        artifact.file_name(),
+    ]
+    .join("::")
+}
+
+fn filter_selected_model_artifacts(
+    artifacts: Vec<ModelArtifact>,
+    selected_keys: Option<&Vec<String>>,
+) -> Vec<ModelArtifact> {
+    let Some(selected_keys) = selected_keys else {
+        return artifacts;
+    };
+    let selected: HashSet<&str> = selected_keys.iter().map(String::as_str).collect();
+    artifacts
+        .into_iter()
+        .filter(|artifact| selected.contains(model_artifact_selection_key(artifact).as_str()))
+        .collect()
+}
+
+fn model_artifacts_for_download_request(
+    resolved: &ResolvedModel,
+    ram_tier: Option<RamTier>,
+    selected_keys: Option<&Vec<String>>,
+) -> Vec<ModelArtifact> {
+    let artifacts = if selected_keys.is_some() {
+        let mut artifacts = Vec::new();
+        for group in &resolved.master.always {
+            for artifact in &group.artifacts {
+                if artifact.ram_bucket.is_some() || artifact.is_supported_on_ram(ram_tier) {
+                    artifacts.push(artifact.clone());
+                }
+            }
+        }
+        for artifact in &resolved.variant.artifacts {
+            if artifact.is_supported_on_ram(ram_tier) {
+                artifacts.push(artifact.clone());
+            }
+        }
+        artifacts
+    } else {
+        resolved.artifacts_for_download(ram_tier)
+    };
+    filter_selected_model_artifacts(artifacts, selected_keys)
 }
 
 fn run_command_capture(
@@ -3871,6 +3929,7 @@ async fn download_model_assets(
     variant_id: String,
     ram_tier: Option<String>,
     vram_tier: Option<String>,
+    selected_artifact_keys: Option<Vec<String>>,
     comfyui_root: Option<String>,
 ) -> Result<(), String> {
     let root = resolve_root_path(&state.context, comfyui_root)?;
@@ -3886,9 +3945,10 @@ async fn download_model_assets(
         .as_deref()
         .and_then(parse_ram_tier)
         .or_else(|| state.context.ram_tier());
-    let planned = resolved.artifacts_for_download(tier);
+    let planned =
+        model_artifacts_for_download_request(&resolved, tier, selected_artifact_keys.as_ref());
     if planned.is_empty() {
-        return Err("No artifacts match the selected RAM tier.".to_string());
+        return Err("No model files are selected for download.".to_string());
     }
 
     let cancel = CancellationToken::new();
@@ -4026,10 +4086,14 @@ async fn download_model_assets_batch(
                 )
             })?;
 
-        let planned = resolved.artifacts_for_download(tier);
+        let planned = model_artifacts_for_download_request(
+            &resolved,
+            tier,
+            item.selected_artifact_keys.as_ref(),
+        );
         if planned.is_empty() {
             return Err(format!(
-                "No artifacts match the selected RAM tier for {}.",
+                "No model files are selected for {}.",
                 resolved.master.display_name
             ));
         }
@@ -7341,8 +7405,12 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
 }
 
 #[tauri::command]
-fn pick_folder() -> Option<String> {
-    rfd::FileDialog::new()
+fn pick_folder(title: Option<String>) -> Option<String> {
+    let mut dialog = rfd::FileDialog::new();
+    if let Some(title) = title.filter(|value| !value.trim().is_empty()) {
+        dialog = dialog.set_title(title);
+    }
+    dialog
         .pick_folder()
         .map(|path| path.to_string_lossy().to_string())
 }
