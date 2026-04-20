@@ -1,0 +1,65 @@
+ArcticDownloader 0.2.5 update log
+
+Purpose:
+- Track code changes made in the Linux workspace so they can be mirrored in the Windows workspace.
+
+Format:
+- Date
+- Change summary
+- Files changed
+- Notes
+
+Entries:
+- 2026-04-19
+  - Fixed high-RAM text encoder defaults so only the largest full non-quantized Tier A text encoder is checked by default when catalog file sizes are available.
+  - Sorted text encoder support-file lists so full/fp encoders appear above projection files and quantized encoders appear at the bottom, with higher-precision quantized files listed before lower-precision ones.
+  - Added human-readable catalog file sizes beside model artifact names in the Selected Queue when `size_bytes` is available.
+  - Added support for catalog-provided runtime RAM estimates via `memory_estimate.runtime_ram_bytes`.
+  - Updated RAM-bucket metadata in model artifact rows to show tradeoff text that explains fidelity versus memory use.
+  - Hid model artifact file extensions in queue display names and derived support-file group headings from artifact `target_category` values.
+  - Added a Selected Queue note explaining that required files are selected automatically and optional support files can be adjusted before downloading.
+  - Renamed the Selected Queue support-file section from `Always Artifacts` to `Additional Model Files`.
+  - Renamed the Selected Queue `Selected Variant Files` heading to `Selected Model`.
+  - Updated always-only models so the dropdown says `All required files`, the queue title is just the model name, and the file section heading says `All required files`.
+  - Files changed:
+    - src-tauri/dist/main.js
+    - src-tauri/dist/styles.css
+    - CHANGELOG_0.2.5.md
+    - version0.2.5_updates
+  - Notes:
+    - The Selected Queue still shows the other Tier A text encoder alternatives so users can opt into them manually.
+    - File-size preference uses catalog `size_bytes`; if sizes are missing, the existing catalog order is used as the tie-breaker.
+    - Artifact labels use the format `filename (File Size: 7.3 GB)` and fall back to just the filename when no size is known.
+    - Runtime estimates use the format `Estimated RAM while running: 5.4 GB` and are shown only when the catalog provides `memory_estimate.runtime_ram_bytes` or the legacy flat `runtime_ram_bytes` field.
+    - The shared Rust catalog model now preserves `memory_estimate.confidence` and `memory_estimate.source` for future UI/debug use.
+    - RAM-bucket metadata now distinguishes full precision and quantized text encoders with tradeoff labels, for example `Highest fidelity, largest memory use`, `High fidelity, lower memory than full precision`, and `Good quality, lower memory than FP8 (Q5)`.
+    - Artifact filenames keep their full extension internally for download selection keys; only the visible queue label is shortened.
+    - Group headings such as LoRAs and Upscale Models now come from `target_category` instead of catalog note-style label text.
+    - The profile labels avoid implying that file size directly equals a hard system RAM requirement.
+    - Projection/support files such as BF16 mproj or text projection files remain checked by default.
+
+- 2026-04-20
+  - Switched catalog refresh from the old GitHub-hosted JSON file to the Supabase `catalog_documents.main` JSON document.
+  - Removed the bundled `data/catalog.json` catalog source so Supabase is the only live catalog source, with the local cache used only for offline startup after a successful refresh.
+  - Removed persisted GitHub catalog endpoint/ETag settings from the app config model.
+  - Added per-tab cloud catalog loading and unavailable states for Models, LoRAs, and Workflows during startup and refresh.
+  - Kept Flux.1 CLIP-L companion text encoder files selected automatically while still selecting the recommended T5 text encoder variant.
+  - Added Linux release packaging fallbacks that retry Debian/RPM builds in temporary Podman containers when Distrobox setup fails.
+  - Excluded the local `.env` file from RPM source archives.
+  - Files changed:
+    - src/catalog.rs
+    - src/config.rs
+    - src/model.rs
+    - src-tauri/dist/index.html
+    - src-tauri/dist/main.js
+    - src-tauri/dist/styles.css
+    - scripts/build-release-linux.sh
+    - packaging/build-packages.sh
+    - README.md
+    - CHANGELOG_0.2.5.md
+    - version0.2.5_updates
+    - data/catalog.json
+  - Notes:
+    - Catalog reads require `ARCTIC_SUPABASE_URL` plus `ARCTIC_SUPABASE_ANON_KEY` or `ARCTIC_SUPABASE_PUBLISHABLE_KEY`.
+    - The Supabase `catalog_documents` table needs a safe public read policy for the `main` row when using an anon/publishable key.
+    - CLIP-L is treated as a required text encoder companion instead of a mutually exclusive T5 alternative.

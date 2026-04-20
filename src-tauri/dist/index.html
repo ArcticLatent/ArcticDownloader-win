@@ -196,6 +196,7 @@
           <button id="select-visible-models" type="button">Select Visible</button>
           <button id="refresh-catalog" type="button">Refresh Catalog</button>
         </div>
+        <div id="model-catalog-status" class="catalog-status hidden" aria-live="polite"></div>
         <div class="row">
           <div id="model-selection-summary" class="transfer-sub">No models selected.</div>
         </div>
@@ -239,6 +240,7 @@
           <select id="lora-id"></select>
           <button id="download-lora" class="primary">Download LoRA</button>
         </div>
+        <div id="lora-catalog-status" class="catalog-status hidden" aria-live="polite"></div>
 
         <div class="row token-row">
           <input id="civitai-token" type="password" placeholder="Civitai API token (optional)" />
@@ -271,6 +273,7 @@
           <select id="workflow-id"></select>
           <button id="download-workflow" class="primary">Download Workflow</button>
         </div>
+        <div id="workflow-catalog-status" class="catalog-status hidden" aria-live="polite"></div>
 
         <div class="preview" id="workflow-preview-container">
           <img id="workflow-preview-image" class="hidden" alt="Workflow preview" />

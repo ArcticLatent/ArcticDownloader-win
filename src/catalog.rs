@@ -1,21 +1,22 @@
 use crate::{
-    config::{default_catalog_endpoint, ConfigStore},
-    env_flags::prefer_local_catalog,
+    config::ConfigStore,
     model::{LoraDefinition, ModelCatalog, ModelVariant, ResolvedModel, WorkflowDefinition},
     vram::VramTier,
 };
 use anyhow::{Context, Result};
 use log::{info, warn};
-use reqwest::{header, Client, StatusCode};
+use reqwest::{Client, StatusCode, Url};
+use serde::Deserialize;
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, RwLock},
     time::Duration,
 };
 
-const BUNDLED_CATALOG: &str = include_str!("../data/catalog.json");
 const CACHED_CATALOG_FILE: &str = "catalog.json";
+const SUPABASE_CATALOG_TABLE: &str = "catalog_documents";
+const SUPABASE_CATALOG_KEY: &str = "main";
 
 #[derive(Debug)]
 pub struct CatalogService {
@@ -25,19 +26,7 @@ pub struct CatalogService {
 
 impl CatalogService {
     pub fn new(config: Arc<ConfigStore>) -> Result<Self> {
-        let catalog = if prefer_local_catalog() {
-            resolve_catalog()
-                .or_else(|| load_cached_catalog(&config))
-                .unwrap_or_else(|| {
-                    serde_json::from_str(BUNDLED_CATALOG).expect("valid bundled JSON")
-                })
-        } else {
-            load_cached_catalog(&config)
-                .or_else(resolve_catalog)
-                .unwrap_or_else(|| {
-                    serde_json::from_str(BUNDLED_CATALOG).expect("valid bundled JSON")
-                })
-        };
+        let catalog = load_cached_catalog(&config).unwrap_or_default();
         info!(
             "Catalog initialised with {} models ({} LoRAs, {} workflows).",
             catalog.models.len(),
@@ -124,14 +113,10 @@ impl CatalogService {
     }
 
     pub async fn refresh_from_remote(&self) -> Result<bool> {
-        let settings = self.config.settings();
-        let endpoint = settings
-            .catalog_endpoint
-            .clone()
-            .or_else(default_catalog_endpoint);
-
-        let Some(url) = endpoint else {
-            info!("No remote catalog endpoint configured; using bundled data.");
+        let Some(source) = SupabaseCatalogSource::from_env() else {
+            warn!(
+                "Supabase catalog is not configured; set ARCTIC_SUPABASE_URL and ARCTIC_SUPABASE_ANON_KEY or ARCTIC_SUPABASE_PUBLISHABLE_KEY."
+            );
             return Ok(false);
         };
 
@@ -143,20 +128,23 @@ impl CatalogService {
             ))
             .timeout(Duration::from_secs(10))
             .build()
-            .context("failed to build HTTP client for catalog refresh")?;
+            .context("failed to build HTTP client for Supabase catalog refresh")?;
 
-        info!("Refreshing catalog from {url}");
+        let url = source.rest_url()?;
+        info!("Refreshing catalog from Supabase table {SUPABASE_CATALOG_TABLE}.{SUPABASE_CATALOG_KEY}");
         let response = client
-            .get(&url)
+            .get(url.clone())
+            .header("apikey", &source.read_key)
+            .bearer_auth(&source.read_key)
             .send()
             .await
-            .with_context(|| format!("failed to fetch remote catalog from {url}"))?;
+            .with_context(|| format!("failed to fetch Supabase catalog from {url}"))?;
 
         match response.status() {
             StatusCode::OK => {}
             status => {
                 warn!(
-                    "Catalog refresh skipped: server returned {} ({:?})",
+                    "Supabase catalog refresh skipped: server returned {} ({:?})",
                     status.as_u16(),
                     status
                 );
@@ -164,18 +152,16 @@ impl CatalogService {
             }
         }
 
-        let etag = response
-            .headers()
-            .get(header::ETAG)
-            .and_then(|value| value.to_str().ok())
-            .map(|value| value.to_string());
-
         let bytes = response
             .bytes()
             .await
-            .context("failed to read remote catalog body")?;
-        let catalog: ModelCatalog = serde_json::from_slice(&bytes)
-            .with_context(|| format!("failed to parse remote catalog JSON from {url}"))?;
+            .context("failed to read Supabase catalog body")?;
+        let mut rows: Vec<SupabaseCatalogDocument> = serde_json::from_slice(&bytes)
+            .with_context(|| format!("failed to parse Supabase catalog response from {url}"))?;
+        let catalog = rows
+            .pop()
+            .map(|row| row.catalog)
+            .context("Supabase catalog_documents.main row was not found")?;
 
         self.persist_catalog(&catalog)?;
 
@@ -184,11 +170,7 @@ impl CatalogService {
             *guard = catalog;
         }
 
-        self.config.update_settings(|settings| {
-            settings.last_catalog_etag = etag.clone();
-        })?;
-
-        info!("Catalog updated from remote source.");
+        info!("Catalog updated from Supabase.");
         Ok(true)
     }
 
@@ -205,61 +187,81 @@ impl CatalogService {
     }
 }
 
-fn resolve_catalog() -> Option<ModelCatalog> {
-    for path in catalog_candidate_paths() {
-        if let Some(catalog) = load_catalog_from_path(&path) {
-            return Some(catalog);
-        }
-    }
-    warn!("Falling back to bundled catalog data.");
-    None
+#[derive(Debug)]
+struct SupabaseCatalogSource {
+    url: String,
+    read_key: String,
 }
 
-fn load_catalog_from_path(path: &Path) -> Option<ModelCatalog> {
+impl SupabaseCatalogSource {
+    fn from_env() -> Option<Self> {
+        let url = runtime_or_build_env("ARCTIC_SUPABASE_URL")?;
+        let read_key = runtime_or_build_env("ARCTIC_SUPABASE_ANON_KEY")
+            .or_else(|| runtime_or_build_env("ARCTIC_SUPABASE_PUBLISHABLE_KEY"))?;
+
+        Some(Self { url, read_key })
+    }
+
+    fn rest_url(&self) -> Result<Url> {
+        let mut url = Url::parse(self.url.trim())
+            .with_context(|| format!("invalid ARCTIC_SUPABASE_URL: {}", self.url))?;
+        url.path_segments_mut()
+            .map_err(|_| anyhow::anyhow!("ARCTIC_SUPABASE_URL cannot be a base URL"))?
+            .extend(["rest", "v1", SUPABASE_CATALOG_TABLE]);
+        url.query_pairs_mut()
+            .append_pair("select", "catalog")
+            .append_pair("catalog_key", &format!("eq.{SUPABASE_CATALOG_KEY}"))
+            .append_pair("limit", "1");
+        Ok(url)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SupabaseCatalogDocument {
+    catalog: ModelCatalog,
+}
+
+fn runtime_or_build_env(name: &str) -> Option<String> {
+    if let Ok(value) = std::env::var(name) {
+        return non_empty(value);
+    }
+
+    match name {
+        "ARCTIC_SUPABASE_URL" => option_env!("ARCTIC_SUPABASE_URL").and_then(non_empty),
+        "ARCTIC_SUPABASE_ANON_KEY" => option_env!("ARCTIC_SUPABASE_ANON_KEY").and_then(non_empty),
+        "ARCTIC_SUPABASE_PUBLISHABLE_KEY" => {
+            option_env!("ARCTIC_SUPABASE_PUBLISHABLE_KEY").and_then(non_empty)
+        }
+        _ => None,
+    }
+}
+
+fn non_empty(value: impl Into<String>) -> Option<String> {
+    let value = value.into();
+    if value.trim().is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn load_catalog_from_path(path: &PathBuf) -> Option<ModelCatalog> {
     match fs::read_to_string(path) {
         Ok(contents) => match serde_json::from_str::<ModelCatalog>(&contents) {
             Ok(parsed) => {
-                info!("Loaded catalog from {:?}", path);
+                info!("Loaded cached catalog from {:?}", path);
                 Some(parsed)
             }
             Err(err) => {
-                warn!("Failed to parse catalog at {:?}: {err}", path);
+                warn!("Failed to parse cached catalog at {:?}: {err}", path);
                 None
             }
         },
         Err(err) => {
-            warn!("Failed to read catalog at {:?}: {err}", path);
+            warn!("Failed to read cached catalog at {:?}: {err}", path);
             None
         }
     }
-}
-
-fn catalog_candidate_paths() -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-
-    if let Ok(custom) = std::env::var("ARCTIC_CATALOG_PATH") {
-        candidates.push(PathBuf::from(custom));
-    }
-
-    if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join("data/catalog.json"));
-    }
-
-    if let Some(exe_dir) = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(PathBuf::from))
-    {
-        candidates.push(exe_dir.join("data/catalog.json"));
-        if let Some(parent) = exe_dir.parent() {
-            candidates.push(parent.join("data/catalog.json"));
-            if let Some(grand) = parent.parent() {
-                candidates.push(grand.join("data/catalog.json"));
-            }
-        }
-    }
-
-    candidates.retain(|p| p.exists());
-    candidates
 }
 
 fn load_cached_catalog(config: &ConfigStore) -> Option<ModelCatalog> {

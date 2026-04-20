@@ -48,7 +48,7 @@ pub fn build_context() -> Result<AppContext> {
     if let Err(err) = runtime.block_on(catalog.refresh_from_remote()) {
         warn!("Unable to refresh catalog from remote source: {err:#}");
     } else {
-        info!("Catalog refreshed from remote at startup.");
+        info!("Catalog refreshed from Supabase at startup.");
     }
 
     let display_version = resolve_display_version(&config);

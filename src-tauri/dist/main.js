@@ -5,6 +5,8 @@ const PATH_SEP = "/";
 const ALWAYS_ONLY_VARIANT_ID = "__always_only__";
 const state = {
   catalog: null,
+  catalogLoading: true,
+  catalogError: "",
   settings: null,
   activeTab: "comfyui",
   transfers: new Map(),
@@ -202,6 +204,7 @@ const el = {
   modelSelectionList: document.getElementById("model-selection-list"),
   modelSelectionSummary: document.getElementById("model-selection-summary"),
   selectedModelQueue: document.getElementById("selected-model-queue"),
+  modelCatalogStatus: document.getElementById("model-catalog-status"),
   effectiveDownloadDestination: document.getElementById("effective-download-destination"),
   modelSearch: document.getElementById("model-search"),
   selectVisibleModels: document.getElementById("select-visible-models"),
@@ -211,11 +214,13 @@ const el = {
 
   loraFamily: document.getElementById("lora-family"),
   loraId: document.getElementById("lora-id"),
+  loraCatalogStatus: document.getElementById("lora-catalog-status"),
   civitaiToken: document.getElementById("civitai-token"),
   saveToken: document.getElementById("save-token"),
   downloadLora: document.getElementById("download-lora"),
   workflowFamily: document.getElementById("workflow-family"),
   workflowId: document.getElementById("workflow-id"),
+  workflowCatalogStatus: document.getElementById("workflow-catalog-status"),
   downloadWorkflow: document.getElementById("download-workflow"),
 
   metaCreator: document.getElementById("meta-creator"),
@@ -2054,6 +2059,80 @@ function setOptions(select, options, selectedValue = null) {
   }
 }
 
+function catalogCounts(catalog = state.catalog) {
+  return {
+    models: Array.isArray(catalog?.models) ? catalog.models.length : 0,
+    loras: Array.isArray(catalog?.loras) ? catalog.loras.length : 0,
+    workflows: Array.isArray(catalog?.workflows) ? catalog.workflows.length : 0,
+  };
+}
+
+function catalogHasContent(catalog = state.catalog) {
+  const counts = catalogCounts(catalog);
+  return counts.models > 0 || counts.loras > 0 || counts.workflows > 0;
+}
+
+function updateCatalogStatusElement(target, text, mode = "loading") {
+  if (!target) return;
+  if (!text) {
+    target.classList.add("hidden");
+    target.classList.remove("error", "ready");
+    target.textContent = "";
+    return;
+  }
+  target.textContent = text;
+  target.classList.remove("hidden", "error", "ready");
+  if (mode === "error") {
+    target.classList.add("error");
+  } else if (mode === "ready") {
+    target.classList.add("ready");
+  }
+}
+
+function renderCatalogStatus() {
+  if (state.catalogLoading) {
+    updateCatalogStatusElement(el.modelCatalogStatus, "Loading models from the cloud catalog...");
+    updateCatalogStatusElement(el.loraCatalogStatus, "Loading LoRAs from the cloud catalog...");
+    updateCatalogStatusElement(el.workflowCatalogStatus, "Loading workflows from the cloud catalog...");
+    return;
+  }
+
+  if (state.catalogError) {
+    const message = state.catalogError;
+    updateCatalogStatusElement(el.modelCatalogStatus, message, "error");
+    updateCatalogStatusElement(el.loraCatalogStatus, message, "error");
+    updateCatalogStatusElement(el.workflowCatalogStatus, message, "error");
+    return;
+  }
+
+  const counts = catalogCounts();
+  updateCatalogStatusElement(
+    el.modelCatalogStatus,
+    counts.models ? "" : "No models are available in the cloud catalog.",
+    counts.models ? "ready" : "error",
+  );
+  updateCatalogStatusElement(
+    el.loraCatalogStatus,
+    counts.loras ? "" : "No LoRAs are available in the cloud catalog.",
+    counts.loras ? "ready" : "error",
+  );
+  updateCatalogStatusElement(
+    el.workflowCatalogStatus,
+    counts.workflows ? "" : "No workflows are available in the cloud catalog.",
+    counts.workflows ? "ready" : "error",
+  );
+}
+
+function setCatalogLoading(loading, message = "") {
+  state.catalogLoading = Boolean(loading);
+  if (loading) {
+    state.catalogError = "";
+  } else if (message) {
+    state.catalogError = message;
+  }
+  renderCatalogStatus();
+}
+
 function switchTab(tab) {
   state.activeTab = tab;
   const comfyui = tab === "comfyui";
@@ -2393,6 +2472,120 @@ function artifactFileName(artifact) {
   return noQuery.split("/").filter(Boolean).pop() || direct;
 }
 
+function artifactDisplayBaseName(artifact) {
+  return artifactFileName(artifact).replace(/\.(safetensors|gguf|ckpt|pt|pth|bin|onnx|json|ya?ml|zip)$/i, "");
+}
+
+function artifactSearchText(artifact) {
+  return [
+    artifactFileName(artifact),
+    String(artifact?.path || "").trim(),
+    String(artifact?.direct_url || "").trim(),
+    String(artifact?.target_category || "").trim(),
+  ].join(" ").toLowerCase();
+}
+
+function isTextEncoderArtifact(artifact) {
+  return /\b(text[_\s-]*encoders?|clip)\b/.test(artifactSearchText(artifact));
+}
+
+function isTextEncoderProjectionArtifact(artifact) {
+  return /(?:^|[_\s\-/])(m?m?proj|projection)(?:$|[_\s\-.])/i.test(artifactSearchText(artifact));
+}
+
+function isClipLTextEncoderArtifact(artifact) {
+  if (!isTextEncoderArtifact(artifact) || isTextEncoderProjectionArtifact(artifact)) return false;
+  return /(?:^|[_\s\-/.])clip[_\s\-.]?l(?:$|[_\s\-.])/i.test(artifactSearchText(artifact));
+}
+
+function isQuantizedTextEncoderArtifact(artifact) {
+  if (!isTextEncoderArtifact(artifact) || isTextEncoderProjectionArtifact(artifact)) return false;
+  const text = artifactSearchText(artifact);
+  return /\bgguf\b/.test(text)
+    || /\bqat\b/.test(text)
+    || /(?:^|[_\-.])q\d(?:[_\-.]|$)/i.test(text)
+    || /(?:^|[_\-.])q\d_[a-z](?:[_\-.]|$)/i.test(text)
+    || /(?:^|[_\-.])fp[2-8](?:[_\-.]|$)/i.test(text)
+    || /(?:^|[_\-.])int\d+(?:[_\-.]|$)/i.test(text);
+}
+
+function quantizedTextEncoderSortRank(artifact) {
+  const text = artifactSearchText(artifact);
+  const fpMatch = text.match(/(?:^|[_\-.])fp([2-8])(?:[_\-.]|$)/i);
+  if (fpMatch) return 10 + (8 - Number(fpMatch[1]));
+  const intMatch = text.match(/(?:^|[_\-.])int(\d+)(?:[_\-.]|$)/i);
+  if (intMatch) return 20 + (8 - Math.min(Number(intMatch[1]), 8));
+  const qMatch = text.match(/(?:^|[_\-.])q(\d)(?:[_\-.]|$)|(?:^|[_\-.])q(\d)_[a-z](?:[_\-.]|$)/i);
+  if (qMatch) return 30 + (8 - Number(qMatch[1] || qMatch[2]));
+  if (/\bqat\b/.test(text)) return 40;
+  if (/\bgguf\b/.test(text)) return 50;
+  return 99;
+}
+
+function quantizedTextEncoderLabel(artifact) {
+  const text = artifactSearchText(artifact);
+  const fpMatch = text.match(/(?:^|[_\-.])fp([2-8])(?:[_\-.]|$)/i);
+  if (fpMatch) return `FP${fpMatch[1]}`;
+  const intMatch = text.match(/(?:^|[_\-.])int(\d+)(?:[_\-.]|$)/i);
+  if (intMatch) return `INT${intMatch[1]}`;
+  const qMatch = text.match(/(?:^|[_\-.])q(\d)(?:[_\-.]|$)|(?:^|[_\-.])q(\d)_[a-z](?:[_\-.]|$)/i);
+  if (qMatch) return `Q${qMatch[1] || qMatch[2]}`;
+  if (/\bqat\b/.test(text)) return "QAT";
+  if (/\bgguf\b/.test(text)) return "GGUF";
+  return "quantized";
+}
+
+function isFullPrecisionTextEncoderArtifact(artifact) {
+  if (!isTextEncoderArtifact(artifact) || isTextEncoderProjectionArtifact(artifact)) return false;
+  return !isQuantizedTextEncoderArtifact(artifact);
+}
+
+function artifactSizeBytes(artifact) {
+  const size = Number(artifact?.size_bytes);
+  return Number.isFinite(size) && size > 0 ? size : 0;
+}
+
+function formatFileSize(bytes) {
+  const size = Number(bytes);
+  if (!Number.isFinite(size) || size <= 0) return "";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = size;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const precision = value >= 10 || unitIndex === 0 ? 0 : 1;
+  return `${value.toFixed(precision)} ${units[unitIndex]}`;
+}
+
+function artifactDisplayName(artifact) {
+  const name = artifactDisplayBaseName(artifact);
+  const size = formatFileSize(artifactSizeBytes(artifact));
+  return size ? `${name} (File Size: ${size})` : name;
+}
+
+function artifactRuntimeRamBytes(artifact) {
+  const nested = Number(artifact?.memory_estimate?.runtime_ram_bytes);
+  if (Number.isFinite(nested) && nested > 0) return nested;
+  const flat = Number(artifact?.runtime_ram_bytes);
+  return Number.isFinite(flat) && flat > 0 ? flat : 0;
+}
+
+function artifactRuntimeRamLabel(artifact) {
+  const size = formatFileSize(artifactRuntimeRamBytes(artifact));
+  return size ? `Estimated RAM while running: ${size}` : "";
+}
+
+function appendArtifactMetaLine(parent, text) {
+  const value = String(text || "").trim();
+  if (!value) return;
+  const meta = document.createElement("span");
+  meta.className = "queue-artifact-choice-meta";
+  meta.textContent = value;
+  parent.appendChild(meta);
+}
+
 function artifactChoiceKey(artifact) {
   return [
     String(artifact?.target_category || "").trim(),
@@ -2407,7 +2600,22 @@ function artifactChoiceStateKey(item, artifact) {
   return [item.modelId, item.variantId, artifactChoiceKey(artifact)].join("::");
 }
 
-function artifactDefaultChecked(artifact, ramTier) {
+function groupPreferredTierATextEncoderKey(group, ramTier) {
+  if (String(ramTier || "").trim() !== "tier_a") return "";
+  const artifacts = Array.isArray(group?.artifacts) ? group.artifacts : [];
+  let preferred = null;
+  artifacts.forEach((artifact) => {
+    if (!artifactSelectableInQueue(artifact, ramTier)) return;
+    if (!artifactDefaultSupportedOnRam(artifact, ramTier)) return;
+    if (!isFullPrecisionTextEncoderArtifact(artifact)) return;
+    if (!preferred || artifactSizeBytes(artifact) > artifactSizeBytes(preferred)) {
+      preferred = artifact;
+    }
+  });
+  return preferred ? artifactChoiceKey(preferred) : "";
+}
+
+function artifactDefaultSupportedOnRam(artifact, ramTier) {
   const bucketTier = String(artifact?.ram_bucket || "").trim();
   if (bucketTier) {
     const currentTier = String(ramTier || "").trim();
@@ -2416,26 +2624,76 @@ function artifactDefaultChecked(artifact, ramTier) {
   return artifactSupportedOnRam(artifact, ramTier);
 }
 
-function artifactChoiceChecked(item, artifact, ramTier) {
+function artifactDefaultChecked(artifact, ramTier, group = null) {
+  const preferredTierATextEncoderKey = groupPreferredTierATextEncoderKey(group, ramTier);
+  if (preferredTierATextEncoderKey && isTextEncoderArtifact(artifact) && !isTextEncoderProjectionArtifact(artifact)) {
+    if (isClipLTextEncoderArtifact(artifact)) {
+      return artifactDefaultSupportedOnRam(artifact, ramTier);
+    }
+    return artifactChoiceKey(artifact) === preferredTierATextEncoderKey;
+  }
+  return artifactDefaultSupportedOnRam(artifact, ramTier);
+}
+
+function artifactChoiceChecked(item, artifact, ramTier, group = null) {
   const key = artifactChoiceStateKey(item, artifact);
   if (state.selectedModelArtifactChoices.has(key)) {
     return state.selectedModelArtifactChoices.get(key);
   }
-  return artifactDefaultChecked(artifact, ramTier);
+  return artifactDefaultChecked(artifact, ramTier, group);
 }
 
-function ramBucketLabel(tierId) {
+function ramBucketLabel(tierId, artifact = null) {
+  if (isFullPrecisionTextEncoderArtifact(artifact)) {
+    return "Highest fidelity, largest memory use";
+  }
+  if (isQuantizedTextEncoderArtifact(artifact)) {
+    const label = quantizedTextEncoderLabel(artifact);
+    if (/^FP8$/i.test(label)) return "High fidelity, lower memory than full precision";
+    if (/^Q[56]$/i.test(label)) return `Good quality, lower memory than FP8 (${label})`;
+    if (/^(Q4|FP4|INT4)$/i.test(label)) return `Balanced quality and memory use (${label})`;
+    if (/^(Q[123]|FP[23]|INT[123])$/i.test(label)) return `Lowest memory use, most quality tradeoff (${label})`;
+    return `Quantized, lower memory than full precision (${label})`;
+  }
   const thresholds = ramThresholdsForDropdownContext();
   if (!tierId) return "";
   return customRamOptionLabel(tierId, thresholds);
 }
 
 function queueArtifactGroupLabel(group) {
-  const label = String(group?.label || "").trim();
-  if (label) return label;
+  const categories = (Array.isArray(group?.artifacts) ? group.artifacts : [])
+    .map((artifact) => targetCategoryLabel(artifact?.target_category))
+    .filter(Boolean);
+  const unique = Array.from(new Set(categories));
+  if (unique.length) return unique.join(" / ");
   const id = String(group?.id || "").trim().replace(/[_-]+/g, " ");
   if (!id) return "Always";
   return id.replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function targetCategoryLabel(category) {
+  const normalized = String(category || "").trim().toLowerCase();
+  const labels = {
+    clip: "Text Encoders",
+    text_encoders: "Text Encoders",
+    loras: "LoRAs",
+    upscale_models: "Upscale Models",
+    vae: "VAE",
+    clip_vision: "CLIP Vision",
+    diffusion_models: "Diffusion Models",
+    unet: "UNet",
+    controlnet: "ControlNet",
+    sams: "SAM Models",
+    pulid: "PuLID",
+    style_models: "Style Models",
+    facerestore_models: "Face Restore Models",
+  };
+  if (labels[normalized]) return labels[normalized];
+  return normalized
+    .split("/")
+    .map((part) => part.replace(/[_-]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase()))
+    .filter(Boolean)
+    .join(" / ");
 }
 
 function queueArtifactGroupRank(group) {
@@ -2446,6 +2704,33 @@ function queueArtifactGroupRank(group) {
   const haystack = [id, label, ...categories].join(" ");
   if (/\b(text[_\s-]*encoders?|clip)\b/.test(haystack)) return 0;
   return 1;
+}
+
+function queueArtifactRank(artifact) {
+  if (isFullPrecisionTextEncoderArtifact(artifact)) return 0;
+  if (isTextEncoderProjectionArtifact(artifact)) return 1;
+  if (isQuantizedTextEncoderArtifact(artifact)) return 2;
+  return 3;
+}
+
+function sortQueueArtifacts(artifacts) {
+  if (!artifacts.some((artifact) => isTextEncoderArtifact(artifact) || isTextEncoderProjectionArtifact(artifact))) {
+    return artifacts;
+  }
+  return artifacts
+    .map((artifact, index) => ({ artifact, index }))
+    .sort((a, b) => {
+      const rankDelta = queueArtifactRank(a.artifact) - queueArtifactRank(b.artifact);
+      if (rankDelta) return rankDelta;
+      if (isQuantizedTextEncoderArtifact(a.artifact) && isQuantizedTextEncoderArtifact(b.artifact)) {
+        const quantDelta = quantizedTextEncoderSortRank(a.artifact) - quantizedTextEncoderSortRank(b.artifact);
+        if (quantDelta) return quantDelta;
+      }
+      const sizeDelta = artifactSizeBytes(b.artifact) - artifactSizeBytes(a.artifact);
+      if (sizeDelta) return sizeDelta;
+      return a.index - b.index;
+    })
+    .map((entry) => entry.artifact);
 }
 
 function alwaysArtifactGroupsForModel(model, ramTier) {
@@ -2464,7 +2749,7 @@ function alwaysArtifactGroupsForModel(model, ramTier) {
         index,
         rank: queueArtifactGroupRank(group),
         label: queueArtifactGroupLabel(group),
-        artifacts,
+        artifacts: sortQueueArtifacts(artifacts),
       };
     })
     .filter((group) => group.artifacts.length > 0)
@@ -2491,7 +2776,7 @@ function selectedArtifactKeysForDownload(item) {
   });
   alwaysArtifactGroupsForModel(item.model, ramTier).forEach((group) => {
     group.artifacts.forEach((artifact) => {
-      if (artifactChoiceChecked(item, artifact, ramTier)) {
+      if (artifactChoiceChecked(item, artifact, ramTier, group)) {
         keys.add(artifactChoiceKey(artifact));
       }
     });
@@ -2514,7 +2799,7 @@ function selectedModelItems() {
       variant: variant || null,
       alwaysOnly,
       label: alwaysOnly
-        ? `${model.display_name}${DOT_SEP}Always Artifacts Only`
+        ? model.display_name
         : `${model.display_name}${variant ? `${DOT_SEP}${modelVariantLabel(variant)}` : ""}`,
     });
   });
@@ -2549,6 +2834,11 @@ function renderSelectedModelQueue() {
     return;
   }
 
+  const note = document.createElement("div");
+  note.className = "queue-note";
+  note.textContent = "Minimum required files are selected automatically. You can adjust optional text encoders, LoRAs, upscalers, and other support files before downloading.";
+  el.selectedModelQueue.appendChild(note);
+
   items
     .sort((a, b) => a.label.localeCompare(b.label))
     .forEach((item) => {
@@ -2560,10 +2850,10 @@ function renderSelectedModelQueue() {
       const title = document.createElement("div");
       title.className = "queue-item-title";
       title.textContent = selectedArtifacts.length === 1
-        ? artifactFileName(selectedArtifacts[0])
+        ? artifactDisplayName(selectedArtifacts[0])
         : selectedArtifacts.length > 1
           ? `${selectedArtifacts.length} selected variant files`
-          : (item.alwaysOnly ? `${item.model.display_name}${DOT_SEP}Always Artifacts Only` : item.label);
+          : item.label;
       const remove = document.createElement("button");
       remove.type = "button";
       remove.textContent = "Remove";
@@ -2582,7 +2872,7 @@ function renderSelectedModelQueue() {
 
         const selectedHeader = document.createElement("div");
         selectedHeader.className = "queue-item-subheader";
-        selectedHeader.textContent = "Selected Variant Files";
+        selectedHeader.textContent = "Selected Model";
         selectedSection.appendChild(selectedHeader);
 
         const selectedList = document.createElement("div");
@@ -2590,7 +2880,13 @@ function renderSelectedModelQueue() {
         selectedArtifacts.forEach((artifact) => {
           const entry = document.createElement("div");
           entry.className = "queue-artifact-item";
-          entry.textContent = artifactFileName(artifact);
+          const text = document.createElement("span");
+          text.className = "queue-artifact-choice-text";
+          const name = document.createElement("span");
+          name.textContent = artifactDisplayName(artifact);
+          text.appendChild(name);
+          appendArtifactMetaLine(text, artifactRuntimeRamLabel(artifact));
+          entry.appendChild(text);
           selectedList.appendChild(entry);
         });
         selectedSection.appendChild(selectedList);
@@ -2604,7 +2900,7 @@ function renderSelectedModelQueue() {
 
         const header = document.createElement("div");
         header.className = "queue-item-subheader";
-        header.textContent = "Always Artifacts";
+        header.textContent = item.alwaysOnly ? "All required files" : "Additional Model Files";
         section.appendChild(header);
 
         alwaysGroups.forEach((group) => {
@@ -2624,7 +2920,7 @@ function renderSelectedModelQueue() {
 
             const checkbox = document.createElement("input");
             checkbox.type = "checkbox";
-            checkbox.checked = artifactChoiceChecked(item, artifact, ramTier);
+            checkbox.checked = artifactChoiceChecked(item, artifact, ramTier, group);
             checkbox.addEventListener("change", () => {
               state.selectedModelArtifactChoices.set(
                 artifactChoiceStateKey(item, artifact),
@@ -2635,15 +2931,13 @@ function renderSelectedModelQueue() {
             const text = document.createElement("span");
             text.className = "queue-artifact-choice-text";
             const name = document.createElement("span");
-            name.textContent = artifactFileName(artifact);
+            name.textContent = artifactDisplayName(artifact);
             text.appendChild(name);
+            appendArtifactMetaLine(text, artifactRuntimeRamLabel(artifact));
 
             const bucket = String(artifact?.ram_bucket || "").trim();
             if (bucket) {
-              const meta = document.createElement("span");
-              meta.className = "queue-artifact-choice-meta";
-              meta.textContent = ramBucketLabel(bucket);
-              text.appendChild(meta);
+              appendArtifactMetaLine(text, ramBucketLabel(bucket, artifact));
             }
 
             label.appendChild(checkbox);
@@ -2666,6 +2960,26 @@ function renderModelSelectionList() {
   const models = filteredModelsForCurrentSelection();
   const tier = selectedVramTierValue();
   el.modelSelectionList.innerHTML = "";
+
+  if (state.catalogLoading && !catalogHasContent()) {
+    const empty = document.createElement("div");
+    empty.className = "empty-msg";
+    empty.textContent = "Loading models from the cloud catalog...";
+    el.modelSelectionList.appendChild(empty);
+    updateModelSelectionSummary();
+    renderSelectedModelQueue();
+    return;
+  }
+
+  if (state.catalogError && !catalogHasContent()) {
+    const empty = document.createElement("div");
+    empty.className = "empty-msg";
+    empty.textContent = "Catalog unavailable. Check your connection and Supabase configuration.";
+    el.modelSelectionList.appendChild(empty);
+    updateModelSelectionSummary();
+    renderSelectedModelQueue();
+    return;
+  }
 
   if (!String(el.modelFamily.value || "").trim() && !String(el.modelSearch?.value || "").trim()) {
     const empty = document.createElement("div");
@@ -2738,7 +3052,7 @@ function renderModelSelectionList() {
     meta.className = "model-select-meta";
     const familyLabel = modelFamilyLabel(model.family);
     meta.textContent = supportsAlwaysOnly
-      ? `${familyLabel}${DOT_SEP}Always artifacts only`
+      ? `${familyLabel}${DOT_SEP}All required files`
       : `${familyLabel}${variants.length ? `${DOT_SEP}${variants.length} manual variant${variants.length === 1 ? "" : "s"}${tier ? `${DOT_SEP}Detected GPU: ${vramTierLabels[tier] || tier.toUpperCase()}` : ""}` : `${DOT_SEP}No variants`}`;
     labelWrap.appendChild(title);
     labelWrap.appendChild(meta);
@@ -2747,7 +3061,7 @@ function renderModelSelectionList() {
     const variantOptions = variants.length
       ? variants.map((variant) => ({ value: variant.id, label: modelVariantLabel(variant, tier) }))
       : supportsAlwaysOnly
-        ? [{ value: ALWAYS_ONLY_VARIANT_ID, label: "Always Artifacts Only" }]
+        ? [{ value: ALWAYS_ONLY_VARIANT_ID, label: "All required files" }]
       : [{ value: "", label: "No variants available", disabled: true }];
     setOptions(variantSelect, variantOptions, currentVariantId);
     variantSelect.disabled = !variants.length && !supportsAlwaysOnly;
@@ -2794,18 +3108,40 @@ async function refreshEffectiveDownloadDestination() {
 
 function refreshLoraSelectors() {
   if (!state.catalog) return;
+  if (state.catalogLoading && !catalogHasContent()) {
+    setOptions(el.loraFamily, [{ value: "", label: "Loading LoRAs...", disabled: true }], "");
+    setOptions(el.loraId, [{ value: "", label: "Loading LoRAs...", disabled: true }], "");
+    return;
+  }
+  if (state.catalogError && !catalogHasContent()) {
+    setOptions(el.loraFamily, [{ value: "", label: "Catalog unavailable", disabled: true }], "");
+    setOptions(el.loraId, [{ value: "", label: "Catalog unavailable", disabled: true }], "");
+    return;
+  }
   const family = el.loraFamily.value || "all";
   const filtered = state.catalog.loras.filter((l) => family === "all" || l.family === family);
   const options = filtered.map((l) => ({ value: l.id, label: l.display_name }));
-  setOptions(el.loraId, options);
+  setOptions(el.loraId, options.length ? options : [{ value: "", label: "No LoRAs available", disabled: true }]);
 }
 
 function refreshWorkflowSelectors() {
   if (!state.catalog) return;
+  if (state.catalogLoading && !catalogHasContent()) {
+    setOptions(el.workflowFamily, [{ value: "", label: "Loading workflows...", disabled: true }], "");
+    setOptions(el.workflowId, [{ value: "", label: "Loading workflows...", disabled: true }], "");
+    loadWorkflowPreview();
+    return;
+  }
+  if (state.catalogError && !catalogHasContent()) {
+    setOptions(el.workflowFamily, [{ value: "", label: "Catalog unavailable", disabled: true }], "");
+    setOptions(el.workflowId, [{ value: "", label: "Catalog unavailable", disabled: true }], "");
+    loadWorkflowPreview();
+    return;
+  }
   const family = el.workflowFamily.value || "all";
   const filtered = (state.catalog.workflows || []).filter((w) => family === "all" || w.family === family);
   const options = filtered.map((w) => ({ value: w.id, label: workflowDisplayName(w) }));
-  setOptions(el.workflowId, options);
+  setOptions(el.workflowId, options.length ? options : [{ value: "", label: "No workflows available", disabled: true }]);
   loadWorkflowPreview();
 }
 
@@ -2960,6 +3296,7 @@ async function bootstrap() {
     return;
   }
   setStartupStatus("Loading settings and catalog...");
+  setCatalogLoading(true);
   const [settings, catalog] = await Promise.all([
     invoke("get_settings"),
     invoke("get_catalog"),
@@ -3189,6 +3526,10 @@ async function bootstrap() {
 
 function applyCatalogSnapshot(catalog, { resetSelectors = false } = {}) {
   state.catalog = catalog;
+  state.catalogLoading = false;
+  state.catalogError = catalogHasContent(catalog)
+    ? ""
+    : "Catalog unavailable. Check your connection and Supabase configuration.";
   const currentModelFamily = resetSelectors ? "" : String(el.modelFamily?.value || "").trim();
   const currentVramTier = resetSelectors ? "" : String(el.vramTier?.value || "").trim();
   const currentLoraFamily = resetSelectors ? null : String(el.loraFamily?.value || "").trim();
@@ -3208,6 +3549,7 @@ function applyCatalogSnapshot(catalog, { resetSelectors = false } = {}) {
 
   setOptions(el.workflowFamily, workflowFamilyOptions(catalog.workflows || []), currentWorkflowFamily);
   refreshWorkflowSelectors();
+  renderCatalogStatus();
 
   logLine(`Loaded ${catalog.models?.length || 0} models, ${catalog.loras?.length || 0} LoRAs, and ${catalog.workflows?.length || 0} workflows.`);
 }
@@ -3241,14 +3583,22 @@ el.clearModelSelection?.addEventListener("click", () => {
 });
 el.refreshCatalog?.addEventListener("click", async () => {
   if (!invoke) return;
+  const originalLabel = el.refreshCatalog.textContent;
   try {
+    setCatalogLoading(true);
+    el.refreshCatalog.textContent = "Refreshing...";
+    el.refreshCatalog.disabled = true;
     showBlockingOverlay("Refreshing catalog...");
     const catalog = await invoke("refresh_catalog");
     applyCatalogSnapshot(catalog);
-    logLine("Catalog refreshed from remote.");
+    logLine("Catalog refreshed from Supabase.");
   } catch (err) {
+    setCatalogLoading(false, "Catalog refresh failed. Check your connection and Supabase configuration.");
+    renderModelSelectionList();
     logLine(`Catalog refresh failed: ${err}`);
   } finally {
+    el.refreshCatalog.textContent = originalLabel;
+    el.refreshCatalog.disabled = false;
     hideStartupOverlay();
   }
 });

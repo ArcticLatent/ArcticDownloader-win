@@ -9,8 +9,6 @@ use std::{
 };
 
 const SETTINGS_FILE: &str = "settings.json";
-const FALLBACK_REMOTE_CATALOG_URL: &str =
-    "https://raw.githubusercontent.com/ArcticLatent/Arctic-Helper/refs/heads/main/assets/catalog.json";
 
 #[derive(Debug)]
 pub struct ConfigStore {
@@ -40,7 +38,7 @@ impl ConfigStore {
             .with_context(|| format!("failed to create cache directory {cache_dir:?}"))?;
 
         let settings_path = config_dir.join(SETTINGS_FILE);
-        let mut settings = if settings_path.exists() {
+        let settings = if settings_path.exists() {
             let data = fs::read(&settings_path)
                 .with_context(|| format!("failed to read settings file {settings_path:?}"))?;
             serde_json::from_slice(&data)
@@ -49,26 +47,13 @@ impl ConfigStore {
             AppSettings::default()
         };
 
-        let mut persist_defaults = false;
-        if settings.catalog_endpoint.is_none() {
-            settings.catalog_endpoint = default_catalog_endpoint();
-            persist_defaults = settings_path.exists();
-        }
-
-        let store = Self {
+        Ok(Self {
             root_dir,
             config_dir,
             state_dir,
             cache_dir,
             settings: RwLock::new(settings),
-        };
-
-        if persist_defaults {
-            let snapshot = store.settings();
-            store.persist_locked(&snapshot)?;
-        }
-
-        Ok(store)
+        })
     }
 
     pub fn settings(&self) -> AppSettings {
@@ -126,9 +111,6 @@ pub struct AppSettings {
     pub prefer_quantized: bool,
     pub concurrent_downloads: usize,
     pub bandwidth_cap_mbps: Option<u32>,
-    pub last_catalog_etag: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub catalog_endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub civitai_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -178,8 +160,6 @@ impl Default for AppSettings {
             prefer_quantized: true,
             concurrent_downloads: 2,
             bandwidth_cap_mbps: None,
-            last_catalog_etag: None,
-            catalog_endpoint: default_catalog_endpoint(),
             civitai_token: None,
             last_installed_version: None,
             comfyui_pinned_memory_enabled: true,
@@ -197,10 +177,6 @@ impl Default for AppSettings {
             comfyui_show_runtime_logs: true,
         }
     }
-}
-
-pub(crate) fn default_catalog_endpoint() -> Option<String> {
-    Some(FALLBACK_REMOTE_CATALOG_URL.to_string())
 }
 
 fn default_true() -> bool {
