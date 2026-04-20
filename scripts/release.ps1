@@ -4,6 +4,8 @@ param(
     [string]$AssetName = "Arctic-ComfyUI-Helper.exe",
     [string]$OutputDir = "dist",
     [string]$NotesFile = "",
+    [string]$EnvFile = ".env",
+    [switch]$SkipSupabaseEnvCheck,
     [switch]$SkipClean
 )
 
@@ -56,6 +58,54 @@ function Resolve-NotesFile([string]$RepoRoot, [string]$ReleaseVersion, [string]$
     return $null
 }
 
+function Import-DotEnv([string]$Path) {
+    if (-not (Test-Path $Path)) {
+        $commaEnv = Join-Path $root ",env"
+        if ($Path -eq ".env" -and (Test-Path $commaEnv)) {
+            throw "Found ',env', but the expected file name is '.env'. Rename it before building a release."
+        }
+        return
+    }
+
+    Get-Content $Path | ForEach-Object {
+        $line = $_.Trim()
+        if (-not $line -or $line.StartsWith("#")) {
+            return
+        }
+
+        $match = [regex]::Match($line, '^\s*([^=]+?)\s*=\s*(.*)\s*$')
+        if (-not $match.Success) {
+            return
+        }
+
+        $name = $match.Groups[1].Value.Trim()
+        $value = $match.Groups[2].Value.Trim()
+        if (
+            ($value.StartsWith('"') -and $value.EndsWith('"')) -or
+            ($value.StartsWith("'") -and $value.EndsWith("'"))
+        ) {
+            $value = $value.Substring(1, $value.Length - 2)
+        }
+
+        if ($name) {
+            Set-Item -Path "Env:$name" -Value $value
+        }
+    }
+}
+
+function Require-SupabaseCatalogEnv {
+    $url = [Environment]::GetEnvironmentVariable("ARCTIC_SUPABASE_URL")
+    $anonKey = [Environment]::GetEnvironmentVariable("ARCTIC_SUPABASE_ANON_KEY")
+    $publishableKey = [Environment]::GetEnvironmentVariable("ARCTIC_SUPABASE_PUBLISHABLE_KEY")
+
+    if ([string]::IsNullOrWhiteSpace($url)) {
+        throw "Missing ARCTIC_SUPABASE_URL. Set it in .env or the current shell before release build."
+    }
+    if ([string]::IsNullOrWhiteSpace($anonKey) -and [string]::IsNullOrWhiteSpace($publishableKey)) {
+        throw "Missing ARCTIC_SUPABASE_ANON_KEY or ARCTIC_SUPABASE_PUBLISHABLE_KEY. Set a public read key before release build."
+    }
+}
+
 if (-not $Version) {
     $Version = Read-Host "Release version (example: 0.1.1)"
 }
@@ -67,6 +117,11 @@ $tag = "v$Version"
 $releaseTitle = "Arctic ComfyUI Helper $Version"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $root
+Import-DotEnv $EnvFile
+if (-not $SkipSupabaseEnvCheck) {
+    Require-SupabaseCatalogEnv
+    Write-Host "Supabase catalog env loaded for release build."
+}
 $resolvedNotesFile = Resolve-NotesFile -RepoRoot $root -ReleaseVersion $Version -ExplicitNotesFile $NotesFile
 $notes = "Release v$Version"
 if ($resolvedNotesFile) {
